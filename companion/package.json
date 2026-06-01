@@ -1,0 +1,12 @@
+{
+  "name": "codey-companion",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Serves normalized Claude Code / Codex usage to the Codey watch (GET /codey/state).",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "lunar-javascript": "^1.7.7"
+  }
+}
