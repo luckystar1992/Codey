@@ -1,0 +1,9 @@
+# Project-local arduino-cli config — committed for a reproducible toolchain.
+# Use with every command via:  arduino-cli --config-file ./arduino-cli.yaml <cmd>
+# (The helper scripts in ./scripts already do this for you.)
+#
+# Cores and libraries install to the shared global data dir (~/Library/Arduino15),
+# so they're reused across projects; only this declarative config lives in the repo.
+board_manager:
+  additional_urls:
+    - https://static-cdn.m5stack.com/resource/arduino/package_m5stack_index.json
