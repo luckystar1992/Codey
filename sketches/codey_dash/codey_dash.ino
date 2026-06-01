@@ -9,13 +9,17 @@
 // Rendered to a full-screen PSRAM canvas for flicker-free animation.
 
 #include <M5Unified.h>
-#include <WiFiManager.h>   // web config portal: AP "Codey-Setup" -> pick WiFi in a browser
+#include <WiFi.h>           // STA 连接 + AP 热点 + scanNetworks
+#include <WebServer.h>      // 自研 WiFi 配置门户(历史列表/一键连/删除/扫描)
+#include <DNSServer.h>      // captive portal:连上热点自动弹配置页
 #include <HTTPClient.h>     // fetch usage JSON from the Companion
 #include <ArduinoJson.h>    // parse it
 #include <WebSocketsClient.h>  // stream mic PCM to the sherpa-onnx ASR server, receive live text
 #include <ESPmDNS.h>        // resolve the Mac by hostname (survives DHCP IP changes)
 #include <Preferences.h>    // persist brightness/volume settings in NVS
 #include <sys/time.h>       // settimeofday() — set the clock from the Companion's epoch
+#include "freertos/stream_buffer.h"  // 语音 PCM 跨核(主loop -> netTask)
+#include "wifi_store.h"     // 多 WiFi 记忆:历史网络(SSID/密码/连接次数)的 NVS 数据层
 
 // ---------- palette (RGB888) ----------
 static const uint32_t COL_CLAUDE = 0xF4894F;
@@ -54,41 +58,51 @@ static const int SIZE = 466, CX = 233, CY = 233;
 
 // ---------- canvas + state ----------
 static M5Canvas cv(&M5.Display);
+static M5Canvas g_ringA(&M5.Display), g_ringB(&M5.Display);   // page0/1 各缓存一张 AA 环,切页只 copy
+static bool     g_ringAok = false, g_ringBok = false;
+static int      g_ringApct = -1, g_ringBpct = -1; static uint32_t g_ringAcol = 0, g_ringBcol = 0;
 static int      page = 0;
 static uint32_t bootMs = 0;
 static uint32_t lastSecMs = 0;
-static bool     g_voice = false;     // voice overlay active
+static volatile bool g_voice = false; // voice overlay active
 static uint32_t g_voiceT0 = 0;       // millis() when the voice overlay started
-static bool     g_wifi = false;      // WiFi connected
-static String   g_ssid = "";         // connected SSID (shown at the bottom, marquee if long)
+static volatile bool g_wifi = false; // WiFi connected (主loop 写, netTask 读)
+static char     g_ssid[48] = {0};    // connected SSID (bottom, marquee if long)
 static bool     g_micOK = false;     // microphone available
-static int16_t  g_micBuf[256];       // mic capture buffer
+static int16_t  g_micBuf[256];       // (legacy, unused)
 static float    g_micLevel = 0.12f;  // smoothed mic level (0..1)
-// ---- streaming voice: continuous mic capture -> WebSocket PCM -> sherpa-onnx live partials ----
+// ---- streaming voice: 主loop 采集 -> StreamBuffer -> netTask sendBIN -> sherpa partials ----
 static int      g_vphase = 0;        // 0 off, 1 listening/streaming, 2 finalizing, 3 result
-static String   g_transcript = "";   // live partial, then final transcript (set by wsEvent)
+static char     g_transcript[256] = {0};   // live/final transcript (netTask 写, 主loop 读)
 static const int    REC_RATE = 16000;
 static const size_t MAX_SAMPLES = (size_t)(REC_RATE * 15);     // 15s max listen window
 static const size_t STREAM_CHUNK = 512;                        // samples per WS frame (~32ms)
-static int16_t* g_audioBuf = nullptr;// continuous mic-capture buffer (PSRAM, no WAV header)
-static size_t   g_sentSamples = 0;   // streaming position (samples already sent)
+static int16_t* g_audioBuf = nullptr;// continuous mic-capture buffer (PSRAM)
+static size_t   g_sentSamples = 0;   // 主loop 已写入 StreamBuffer 的样本位置
 static size_t   g_recEnd = 0;        // capture length at stop (flush up to here)
 static bool     g_heardSpeech = false;
-static uint32_t g_silenceT0 = 0;     // start of trailing silence (after speech) -> auto-stop
+static uint32_t g_silenceT0 = 0;     // start of trailing silence -> auto-stop
 static uint32_t g_resultT0 = 0;      // when the result was shown (dismiss timeout)
-static uint32_t g_finalReqT0 = 0;    // when listen-stop was sent (final-result timeout)
-static volatile bool g_sttFinal = false;     // server sent a final stt for this utterance
+static uint32_t g_finalReqT0 = 0;    // when listen-stop was requested (final timeout)
+static volatile bool g_sttFinal = false;     // server sent a final stt
 static float    g_noiseFloor = 0.06f;// adaptive VAD noise floor
-// WebSocket to the streaming-ASR server
-static WebSocketsClient g_ws;
+// ---- network: 所有阻塞 IO 都在 netTask/core0;主loop 不等待 ----
+static WebSocketsClient g_ws;        // ONLY touched by netTask
 static volatile bool g_wsConn = false;
-static const char*    MAC_HOSTNAME    = "testnull-2";      // Mac's mDNS name (resolves to its LAN IP)
-static const char*    MAC_FALLBACK_IP = "192.168.1.29";    // used if mDNS fails
-static String         g_macIp = "192.168.1.29";            // resolved Mac IP (mDNS, else fallback)
+static const char*    MAC_HOSTNAME    = "testnull-2";
+static const char*    MAC_FALLBACK_IP = "192.168.1.29";
+static String         g_macIp = "192.168.1.29";   // netTask only
+static char           g_manualMac[24] = {0};      // 手填 Companion IP(NVS;门户写/netTask读)
 static const uint16_t ASR_PORT = 8788;
-static String g_model = "";          // Claude model name (from statusline) shown under the avatar
-static String g_lunar = "";          // 农历 e.g. 四月十五 (from Companion)
-static String g_zodiac = "";         // 生肖 e.g. 马 (from Companion)
+static char     g_model[48] = {0};   // Claude 模型名(头像下),netTask 写 主loop 读
+static char     g_codexModel[48] = {0};  // Codex 最常用模型名(头像下)
+static char     g_lunar[40] = {0};
+static char     g_zodiac[16] = {0};
+static volatile int  g_netListenReq = 0;     // 1=start 2=stop (主loop -> netTask)
+static volatile bool g_netReconnect = false; // reconfigWiFi 后让 netTask 重连
+static volatile bool g_netPause = false;     // 门户运行时暂停 netTask 的 WiFi 操作(避免双核争用 WiFi 栈)
+static StreamBufferHandle_t g_voiceSB = nullptr;  // 语音 PCM (主loop -> netTask)
+static bool     g_rtcSynced = false;
 // ---- settings page ----
 static Preferences g_prefs;
 static bool     g_inSettings = false;
@@ -103,10 +117,12 @@ static float    g_accMag = 1.0f;     // last accel magnitude (motion detection)
 static uint32_t g_lastShake = 0;     // shake-gesture debounce
 // ---- live data from the Companion ----
 static String g_companionUrl = "http://192.168.1.29:8787/codey/state";   // rebuilt from g_macIp at boot
-static bool     g_haveData = false;
+static volatile bool g_haveData = false;
+static volatile bool g_companionOk = false;   // usage 接口(Companion)是否可达 -> 尾灯 绿/红
 static bool     g_stale = false;
 static long     g_sReset[2] = {0, 0}, g_wReset[2] = {0, 0};   // real reset epochs (0 = use mock)
 static uint32_t g_lastFetch = 0;
+static int      g_fetchFails = 0;    // consecutive fetch failures -> re-resolve Mac (IP drift self-heal)
 
 // ---------- animation state (shared) ----------
 static bool     aBlink = false;
@@ -148,7 +164,7 @@ static const char* moodFor(int used, int pending, int battery) {
 // no native smooth arc). Convention-free — the angle is computed from the pixel itself
 // (design space: 0=top, clockwise), so the gap is always centered at the bottom. Background is
 // black here, so coverage blends by scaling the colour toward black.
-static void drawArc(uint32_t color, int pct) {
+static void drawArc(M5Canvas& dst, uint32_t color, int pct) {
   const float rIn = 209.0f, rOut = 223.0f;
   const float startDeg = -138.0f, sweepDeg = 276.0f;       // gap (84°) centered at the bottom
   const float p = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
@@ -169,14 +185,14 @@ static void drawArc(uint32_t color, int pct) {
       float dn = d - startDeg; if (dn < 0) dn += 360.0f;
       if (dn > sweepDeg) continue;                               // inside the bottom gap
       uint32_t rgb = (dn <= fillDeg) ? color : 0x23262c;         // progress vs track
-      cv.drawPixel(px, py, c565(shade(rgb, -(1.0f - cov))));     // blend toward black = anti-alias
+      dst.drawPixel(px, py, c565(shade(rgb, -(1.0f - cov))));   // -> cached ring sprite (AA toward black)
     }
   }
   if (pct > 0) {                                                 // glowing AA cap dot at the progress tip
     float a = (startDeg + fillDeg - 90.0f) * DEG_TO_RAD;
     int hx = CX + 216 * cosf(a), hy = CY + 216 * sinf(a);
-    cv.fillSmoothCircle(hx, hy, 9, c565(COL_WHITE));
-    cv.fillSmoothCircle(hx, hy, 6, c565(color));
+    dst.fillSmoothCircle(hx, hy, 9, c565(COL_WHITE));
+    dst.fillSmoothCircle(hx, hy, 6, c565(color));
   }
 }
 
@@ -272,23 +288,26 @@ static void drawDots(int active, uint32_t color) {
 
 // ---------- WiFi status row (bottom): status dot + SSID, marquee-scrolls if the name is too long ----------
 static void drawWifiStatus(int y) {
-  const uint16_t dotc = g_wifi ? c565(0x3CCB7F) : c565(0x6a6d74);
-  String ssid = g_wifi ? (g_ssid.length() ? g_ssid : String("WiFi")) : String("No WiFi");
-  cv.setFont(&fonts::FreeSans9pt7b); cv.setTextSize(1);
+  const uint16_t wifiDot = g_wifi ? c565(0x3CCB7F) : c565(0x6a6d74);          // 前灯: WiFi 连接
+  const uint16_t usbDot  = g_companionOk ? c565(0x3CCB7F) : c565(COL_DANGER); // 后灯: usage 接口可达
+  String ssid = g_wifi ? (g_ssid[0] ? String(g_ssid) : String("WiFi")) : String("No WiFi");
+  cv.setFont(&fonts::efontCN_16); cv.setTextSize(1);   // CJK-capable (中文 SSID)
   cv.setTextColor(c565(0xB8BAC0));
-  const int maxW = 300, dotR = 3;
+  const int maxW = 286, dotR = 3, gap = 8;
   int tw = cv.textWidth(ssid.c_str());
-  if (tw <= maxW) {                                   // fits -> centered [dot] SSID
-    int total = dotR * 2 + 8 + tw, sx = CX - total / 2;
-    cv.fillCircle(sx + dotR, y, dotR, dotc);
+  if (tw <= maxW) {                                   // fits -> [wifiDot] SSID [usageDot], centered
+    int total = dotR * 2 + gap + tw + gap + dotR * 2, sx = CX - total / 2;
+    cv.fillCircle(sx + dotR, y, dotR, wifiDot);
     cv.setTextDatum(middle_left);
-    cv.drawString(ssid.c_str(), sx + dotR * 2 + 8, y);
-  } else {                                            // too long -> fixed dot + scrolling marquee
-    int winL = CX - maxW / 2;
-    cv.fillCircle(winL - 9, y, dotR, dotc);
+    cv.drawString(ssid.c_str(), sx + dotR * 2 + gap, y);
+    cv.fillCircle(sx + dotR * 2 + gap + tw + gap + dotR, y, dotR, usbDot);
+  } else {                                            // too long -> fixed dots + scrolling marquee
+    int winL = CX - maxW / 2, winR = CX + maxW / 2;
+    cv.fillCircle(winL - 9, y, dotR, wifiDot);
+    cv.fillCircle(winR + 9, y, dotR, usbDot);
     int scrollW = tw + 48;
     int off = (int)((millis() / 40) % (uint32_t)scrollW);
-    cv.setClipRect(winL, y - 13, maxW, 26);
+    cv.setClipRect(winL, y - 11, maxW, 22);
     cv.setTextDatum(middle_left);
     cv.drawString(ssid.c_str(), winL - off, y);
     cv.drawString(ssid.c_str(), winL - off + scrollW, y);   // 2nd copy -> seamless loop
@@ -450,7 +469,8 @@ static void wsEvent(WStype_t type, uint8_t* payload, size_t len) {
     JsonDocument doc;
     if (deserializeJson(doc, payload, len)) return;
     if (strcmp(doc["type"] | "", "stt") == 0) {
-      g_transcript = String((const char*)(doc["text"] | ""));   // live partial / final
+      strncpy(g_transcript, (const char*)(doc["text"] | ""), sizeof(g_transcript) - 1);
+      g_transcript[sizeof(g_transcript) - 1] = '\0';            // live partial / final
       if (doc["final"] | false) g_sttFinal = true;
     }
   }
@@ -516,7 +536,7 @@ static void drawVoiceOverlay() {
   cv.fillSprite(c565(0x060608));                              // dark takeover
   const uint32_t color = PROV[page].color;
   const float t = (millis() - g_voiceT0) / 1000.0f;
-  const bool hasText = g_transcript.length() > 0;
+  const bool hasText = g_transcript[0] != 0;
 
   // particle orb: pulses with the real mic level while listening, calm otherwise
   float amp = (g_vphase == 1) ? constrain(g_micLevel, 0.06f, 1.0f) : 0.16f;
@@ -526,7 +546,7 @@ static void drawVoiceOverlay() {
   if (hasText) {
     cv.setFont(&fonts::efontCN_24); cv.setTextSize(1);
     cv.setTextColor(c565(0xFFFFFF));
-    drawWrappedCJK(g_transcript, CX, 305, 420, 34);
+    drawWrappedCJK(String(g_transcript), CX, 305, 420, 34);
   }
 
   cv.setTextDatum(middle_center);
@@ -605,8 +625,8 @@ static void drawWatchFace() {
   char l1[48]; snprintf(l1, sizeof(l1), "%s  %d月%d日", WD[ti.tm_wday & 7], ti.tm_mon + 1, ti.tm_mday);
   cv.setFont(&fonts::efontCN_24); cv.setTextSize(1); cv.setTextDatum(middle_center);
   cv.setTextColor(silver); cv.drawString(l1, cx, 96);
-  if (g_lunar.length()) {
-    String l2 = g_lunar + (g_zodiac.length() ? ("  " + g_zodiac + "年") : String(""));
+  if (g_lunar[0]) {
+    String l2 = String(g_lunar) + (g_zodiac[0] ? ("  " + String(g_zodiac) + "年") : String(""));
     cv.setTextColor(dimtxt); cv.drawString(l2.c_str(), cx, 126);
   }
 
@@ -659,15 +679,28 @@ static void render() {
   char clk[8]; snprintf(clk, sizeof(clk), "%02d:%02d", g_clkH, g_clkM);
   float t = (millis() - bootMs) / 1000.0f;
 
-  cv.fillSprite(c565(0x000000));
-  drawArc(p.color, arcPct);
+  M5Canvas* rc = (page == 0) ? &g_ringA : &g_ringB;        // page0/1 各自的缓存环
+  bool rok = (page == 0) ? g_ringAok : g_ringBok;
+  int* rpct = (page == 0) ? &g_ringApct : &g_ringBpct;
+  uint32_t* rcol = (page == 0) ? &g_ringAcol : &g_ringBcol;
+  if (rok) {
+    if (arcPct != *rpct || p.color != *rcol) {            // 仅本页 pct/颜色变化时重算(非每帧、非切页)
+      rc->fillSprite(c565(0x000000));
+      drawArc(*rc, p.color, arcPct);
+      *rpct = arcPct; *rcol = p.color;
+    }
+    rc->pushSprite(&cv, 0, 0);                             // 切页只 copy -> 不卡
+  } else {
+    cv.fillSprite(c565(0x000000));
+  }
   drawHeader(p, String(clk));
   if (page == 0) drawClaude(CX, 150, p.color, mood, t);
   else           drawCodex(CX, 150, p.color, mood, t);
-  if (page == 0 && g_model.length()) {              // model name under the avatar (e.g. "Opus 4.8")
+  const char* mdl = (page == 0) ? g_model : (page == 1) ? g_codexModel : "";   // 头像下的模型名
+  if (mdl[0]) {                               // Claude: "Opus 4.8" / Codex: "GPT-5.5"
     cv.setFont(&fonts::FreeSans9pt7b); cv.setTextSize(1);
     cv.setTextDatum(middle_center); cv.setTextColor(c565(0x8a8d94));
-    cv.drawString(g_model.c_str(), CX, 226);
+    cv.drawString(mdl, CX, 226);
   }
   long nowE = time(nullptr);
   bool epochOK = nowE > 1700000000L;   // NTP set -> real epoch
@@ -693,6 +726,192 @@ static void showSetupScreen(const char* l1, const char* l2, const char* l3) {
   cv.pushSprite(0, 0);
 }
 
+// ---------- WiFi: 多网络自动连接 + 自研配置门户 ----------
+static void showConnecting(const char* ssid) {            // 开机逐个尝试历史网络时的中文提示
+  cv.fillSprite(c565(0x000000));
+  cv.setTextDatum(middle_center);
+  cv.setFont(&fonts::efontCN_24); cv.setTextColor(c565(COL_CODEX));
+  cv.drawString("正在连接", CX, CY - 34);
+  cv.setFont(&fonts::efontCN_24); cv.setTextColor(c565(COL_WHITE));
+  cv.drawString(ssid, CX, CY + 6);
+  cv.setFont(&fonts::efontCN_16); cv.setTextColor(c565(0x808080));
+  cv.drawString("请稍候…", CX, CY + 44);
+  cv.pushSprite(0, 0);
+}
+
+static void showPortalScreen(const char* ip) {            // 全部连不上 -> 提示用 web 配置新网络
+  cv.fillSprite(c565(0x000000));
+  cv.setTextDatum(middle_center);
+  cv.setFont(&fonts::efontCN_24); cv.setTextColor(c565(COL_CODEX));
+  cv.drawString("WiFi 配置", CX, CY - 58);
+  cv.setFont(&fonts::efontCN_16); cv.setTextColor(c565(0xC8C8C8));
+  cv.drawString("手机连接热点", CX, CY - 20);
+  cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextColor(c565(COL_WHITE));
+  cv.drawString("Codey-Setup", CX, CY + 6);
+  cv.setFont(&fonts::efontCN_16); cv.setTextColor(c565(0xC8C8C8));
+  cv.drawString("浏览器打开", CX, CY + 40);
+  cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextColor(c565(COL_WHITE));
+  cv.drawString(ip, CX, CY + 66);
+  cv.pushSprite(0, 0);
+}
+
+static bool wifiTryConnect(const char* ssid, const char* pass, uint32_t timeoutMs) {
+  WiFi.begin(ssid, pass);
+  uint32_t t0 = millis();
+  while (millis() - t0 < timeoutMs) {
+    if (WiFi.status() == WL_CONNECTED) return true;
+    delay(120);
+  }
+  return false;
+}
+
+// 开机自动连:扫描周边 -> 在历史(已按 count 降序)中取可见者,逐个尝试,屏显进度。
+static bool wifiAutoConnect() {
+  WiFi.mode(WIFI_STA);
+  if (g_netCount == 0) {                               // 历史为空(如刚刷机) -> 试 ESP32 底层上次凭证,成功则导入
+    WiFi.begin();
+    showSetupScreen("WiFi", "connecting...", "");
+    uint32_t t0 = millis();
+    while (millis() - t0 < 6000 && WiFi.status() != WL_CONNECTED) delay(120);
+    if (WiFi.status() == WL_CONNECTED) {
+      String s = WiFi.SSID(), p = WiFi.psk();
+      if (s.length()) wifiStoreTouch(g_prefs, s.c_str(), p.c_str());   // 迁移进历史(含密码)
+      Serial.printf("[wifi] adopted saved creds: %s\n", s.c_str());
+      return true;
+    }
+  }
+  showSetupScreen("WiFi", "scanning...", "");
+  int n = WiFi.scanNetworks();
+  for (int i = 0; i < g_netCount; i++) {
+    bool visible = false;
+    for (int j = 0; j < n; j++) if (WiFi.SSID(j) == g_nets[i].ssid) { visible = true; break; }
+    if (!visible) continue;                                       // 不在附近 -> 跳过(省时)
+    Serial.printf("[wifi] try %s (count=%u)\n", g_nets[i].ssid, g_nets[i].count);
+    showConnecting(g_nets[i].ssid);
+    if (wifiTryConnect(g_nets[i].ssid, g_nets[i].pass, 8000)) {
+      wifiStoreTouch(g_prefs, g_nets[i].ssid, g_nets[i].pass);     // count++ & 落盘
+      WiFi.scanDelete();
+      return true;
+    }
+  }
+  WiFi.scanDelete();
+  return false;
+}
+
+// ---- 自研配置门户(AP「Codey-Setup」+ captive DNS + WebServer) ----
+static WebServer*    g_portalSrv  = nullptr;
+static volatile bool g_portalDone = false;
+
+static String urlencode(const String& s) {
+  String o; char b[4];
+  for (size_t i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.' || c == '~') o += c;
+    else { snprintf(b, sizeof(b), "%%%02X", (unsigned char)c); o += b; }
+  }
+  return o;
+}
+
+static String portalHtml() {
+  String h = F("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+    "<title>Codey WiFi</title><style>"
+    "body{font-family:-apple-system,sans-serif;background:#0b0c0e;color:#e8e8ea;margin:0;padding:16px}"
+    "h2{color:#22d3a6;font-size:20px;margin:4px 0 12px}h3{color:#9aa;font-size:14px;margin:18px 0 8px}"
+    ".row{display:flex;align-items:center;justify-content:space-between;background:#16181c;border-radius:10px;padding:10px 12px;margin:6px 0}"
+    ".ss{font-size:15px}.ct{color:#7a7d84;font-size:12px;margin-left:8px}"
+    "input,select{width:100%;box-sizing:border-box;background:#16181c;border:1px solid #303236;color:#fff;border-radius:8px;padding:11px;margin:5px 0;font-size:15px}"
+    "button{border:0;border-radius:8px;padding:9px 14px;font-weight:600;font-size:14px}"
+    ".pri{background:#22d3a6;color:#04110d;width:100%;padding:12px;margin-top:6px}.lk{background:#2d6cf6;color:#fff}.del{background:#ff5d5d;color:#fff}"
+    "</style><h2>Codey WiFi 配置</h2>");
+  h += F("<h3>已记住的网络（按连接次数）</h3>");
+  if (g_netCount == 0) h += F("<div class=ct>暂无历史网络</div>");
+  for (int i = 0; i < g_netCount; i++) {
+    h += "<div class=row><div><span class=ss>" + String(g_nets[i].ssid) + "</span><span class=ct>×" + String(g_nets[i].count) + "</span></div><div>";
+    h += "<form style='display:inline' method=POST action=/connect><input type=hidden name=ssid value=\"" + String(g_nets[i].ssid) + "\"><button class=lk>连接</button></form> ";
+    h += "<a href='/del?ssid=" + urlencode(g_nets[i].ssid) + "'><button class=del>删除</button></a></div></div>";
+  }
+  h += F("<h3>周边网络</h3><select id=scan onchange=\"document.getElementById('ssid').value=this.value\"><option>点「扫描」刷新…</option></select>"
+         "<button class=lk style=width:100% onclick=doScan()>扫描周边 WiFi</button>");
+  h += "<h3>连接 / 新增网络</h3><form method=POST action=/connect>"
+       "<input id=ssid name=ssid placeholder=SSID>"
+       "<input name=pass type=password placeholder='密码（连接历史网络可留空）'>"
+       "<input name=macip placeholder='Companion Mac IP（留空=自动 mDNS）' value=\"" + String(g_manualMac) + "\">"
+       "<button class=pri type=submit>保存并连接</button></form>";
+  h += F("<script>function doScan(){let s=document.getElementById('scan');s.innerHTML='<option>扫描中…</option>';"
+         "fetch('/scan').then(r=>r.json()).then(d=>{s.innerHTML='';d.sort((a,b)=>b.r-a.r);"
+         "d.forEach(n=>{let o=document.createElement('option');o.value=n.s;o.text=n.s+'  ('+n.r+'dBm)';s.add(o)});"
+         "if(d.length){document.getElementById('ssid').value=d[0].s}})}</script>");
+  return h;
+}
+
+static void portalHandleRoot() { g_portalSrv->send(200, "text/html; charset=utf-8", portalHtml()); }
+
+static void portalHandleScan() {
+  int n = WiFi.scanNetworks();
+  JsonDocument doc; JsonArray a = doc.to<JsonArray>();
+  for (int i = 0; i < n && i < 24; i++) { JsonObject o = a.add<JsonObject>(); o["s"] = WiFi.SSID(i); o["r"] = WiFi.RSSI(i); }
+  String js; serializeJson(doc, js);
+  WiFi.scanDelete();
+  g_portalSrv->send(200, "application/json", js);
+}
+
+static void portalHandleDel() {
+  String ssid = g_portalSrv->arg("ssid");
+  if (ssid.length()) wifiStoreRemove(g_prefs, ssid.c_str());
+  g_portalSrv->sendHeader("Location", "/");
+  g_portalSrv->send(302, "text/plain", "");
+}
+
+static void portalHandleConnect() {
+  WebServer& s = *g_portalSrv;
+  String ssid = s.arg("ssid"), pass = s.arg("pass"), mac = s.arg("macip");
+  if (mac.length()) { strncpy(g_manualMac, mac.c_str(), sizeof(g_manualMac) - 1); g_manualMac[sizeof(g_manualMac) - 1] = 0; g_prefs.putString("macip", g_manualMac); }
+  if (ssid.length() == 0) { s.send(200, "text/html; charset=utf-8", "<meta charset=utf-8>请填写 SSID。<a href=/>返回</a>"); return; }
+  if (pass.length() == 0) { const char* hp = wifiStorePass(ssid.c_str()); if (hp) pass = hp; }   // 一键连:用历史密码
+  WiFi.begin(ssid.c_str(), pass.c_str());
+  uint32_t t0 = millis(); bool ok = false;
+  while (millis() - t0 < 12000) { if (WiFi.status() == WL_CONNECTED) { ok = true; break; } delay(150); }
+  if (ok) {
+    wifiStoreTouch(g_prefs, ssid.c_str(), pass.c_str());
+    s.send(200, "text/html; charset=utf-8", "<meta charset=utf-8><h2 style='font-family:sans-serif'>已连接 " + ssid + " ✓</h2><p>设备继续启动,可关闭本页。</p>");
+    g_portalDone = true;
+  } else {
+    s.send(200, "text/html; charset=utf-8", "<meta charset=utf-8><h2 style='font-family:sans-serif'>连接 " + ssid + " 失败</h2><p>请检查密码后重试。<a href=/>返回</a></p>");
+  }
+}
+
+// 阻塞式配置门户:连上 / 3 分钟超时 / 双键 返回。运行时调用前用 g_netPause 让 netTask 放开 WiFi 栈。
+static bool wifiConfigPortal() {
+  g_netPause = true; delay(120);
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP("Codey-Setup");
+  IPAddress apIP = WiFi.softAPIP();
+  DNSServer dns; dns.start(53, "*", apIP);
+  WebServer srv(80); g_portalSrv = &srv; g_portalDone = false;
+  srv.on("/", portalHandleRoot);
+  srv.on("/scan", portalHandleScan);
+  srv.on("/connect", HTTP_POST, portalHandleConnect);
+  srv.on("/del", portalHandleDel);
+  srv.onNotFound([]() { g_portalSrv->sendHeader("Location", "/"); g_portalSrv->send(302, "text/plain", ""); });
+  srv.begin();
+  showPortalScreen(apIP.toString().c_str());
+  uint32_t t0 = millis();
+  while (!g_portalDone && millis() - t0 < 180000) {
+    dns.processNextRequest();
+    srv.handleClient();
+    M5.update();
+    if (M5.BtnA.isPressed() && M5.BtnB.isPressed()) { delay(400); break; }    // 双键放弃配置
+    delay(2);
+  }
+  srv.stop(); dns.stop();
+  bool ok = (WiFi.status() == WL_CONNECTED);
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+  g_portalSrv = nullptr;
+  g_netPause = false;
+  return ok;
+}
+
 static bool timeSane(time_t e) { return e > 1700000000L && e < 1900000000L; }   // ~2023..2030, rejects garbage RTC
 
 // clock = Beijing time (UTC+8), 24h. Prefer the system epoch (set from the Companion's ts / NTP;
@@ -715,14 +934,26 @@ static void syncRtcFromSystem() {
 }
 // find the Companion Mac on the LAN by mDNS hostname (robust to DHCP IP changes); else fixed fallback
 static void resolveMac() {
-  if (MDNS.begin("codey-watch")) {
-    IPAddress ip = MDNS.queryHost(MAC_HOSTNAME, 2500);
-    if (ip != IPAddress((uint32_t)0)) g_macIp = ip.toString();
+  String ip = "";
+  if (MDNS.begin("codey-watch")) {                 // 1) mDNS (家用网/不拦多播的网)
+    IPAddress a = MDNS.queryHost(MAC_HOSTNAME, 2000);
+    if (a != IPAddress((uint32_t)0)) ip = a.toString();
   }
-  if (g_macIp.length() == 0) g_macIp = String(MAC_FALLBACK_IP);
+  if (ip.length() == 0 && g_manualMac[0]) ip = String(g_manualMac);   // 2) 手填(公司网 mDNS 被拦)
+  if (ip.length() == 0) ip = MAC_FALLBACK_IP;                       // 3) 兜底
+  g_macIp = ip;
   g_companionUrl = "http://" + g_macIp + ":8787/codey/state";
   Serial.printf("Companion Mac -> %s\n", g_macIp.c_str());
 }
+// (re)point the streaming-ASR WebSocket at the current Mac IP (after IP change / WiFi switch)
+static void wsConnect() {
+  g_ws.disconnect();
+  g_ws.begin(g_macIp.c_str(), ASR_PORT, "/");
+  g_ws.onEvent(wsEvent);
+  g_ws.setReconnectInterval(3000);
+}
+
+static void netTask(void*);   // 定义在后面(core0 网络任务);setup 里 xTaskCreate 需先声明
 
 void setup() {
   auto cfg = M5.config();
@@ -731,15 +962,19 @@ void setup() {
   Serial.begin(115200);
   Serial.println("codey_dash booted");
 
-  g_prefs.begin("codey", false);                  // persisted settings (brightness/volume)
+  g_prefs.begin("codey", false);                  // persisted settings (brightness/volume/macip)
   g_bright = g_prefs.getUChar("bright", 255);
   g_volume = g_prefs.getUChar("vol", 50);
+  { String m = g_prefs.getString("macip", ""); strncpy(g_manualMac, m.c_str(), sizeof(g_manualMac) - 1); g_manualMac[sizeof(g_manualMac) - 1] = 0; }
   M5.Display.setBrightness(g_bright);
 
   randomSeed(micros());
   cv.setColorDepth(16);
   cv.setPsram(true);
   if (!cv.createSprite(SIZE, SIZE)) Serial.println("ERROR: canvas alloc failed");
+  g_ringA.setColorDepth(16); g_ringA.setPsram(true); g_ringAok = (g_ringA.createSprite(SIZE, SIZE) != nullptr);
+  g_ringB.setColorDepth(16); g_ringB.setPsram(true); g_ringBok = (g_ringB.createSprite(SIZE, SIZE) != nullptr);
+  Serial.printf("ring sprites: %d %d\n", g_ringAok, g_ringBok);
 
   M5.Speaker.end();                       // free the shared codec for the mic
   g_micOK = M5.Mic.begin();
@@ -747,32 +982,26 @@ void setup() {
   Serial.printf("Mic begin=%d  IMU enabled=%d  audioBuf=%p\n", g_micOK, M5.Imu.isEnabled(), g_audioBuf);
   if (!g_audioBuf) Serial.println("ERROR: audio buffer alloc failed (PSRAM) — voice disabled");
 
-  // ---- WiFi provisioning via web config portal ----
-  showSetupScreen("WiFi", "connecting...", "");
-  WiFiManager wm;
-  wm.setConfigPortalTimeout(180);                 // give up after 3 min -> run offline
-  wm.setAPCallback([](WiFiManager*) {
-    showSetupScreen("WiFi Setup", "join hotspot:  Codey-Setup", "then open  192.168.4.1");
-  });
-  g_wifi = wm.autoConnect("Codey-Setup");          // saved creds, else open portal
+  // ---- WiFi: 多网络自动连接(记忆历史) -> 都失败则自研配置门户 ----
+  wifiStoreLoad(g_prefs);                          // 历史网络(SSID/密码/连接次数),按 count 降序
+  g_wifi = wifiAutoConnect();                      // 扫描周边 + 按连接次数依次尝试记住的网络
+  if (!g_wifi) g_wifi = wifiConfigPortal();        // 都连不上 -> 提示用 web 配置新网络
   if (g_wifi) {
-    g_ssid = WiFi.SSID();
-    Serial.printf("WiFi connected: %s (%s)\n", WiFi.localIP().toString().c_str(), g_ssid.c_str());
+    { String s = WiFi.SSID(); strncpy(g_ssid, s.c_str(), sizeof(g_ssid) - 1); g_ssid[sizeof(g_ssid) - 1] = 0; }
+    Serial.printf("WiFi connected: %s (%s)\n", WiFi.localIP().toString().c_str(), g_ssid);
     configTime(8 * 3600, 0, "ntp.aliyun.com", "ntp.tencent.com", "pool.ntp.org");  // UTC+8 offset for localtime
     showSetupScreen("WiFi Connected", WiFi.localIP().toString().c_str(), "");
-    resolveMac();                                  // find the Companion Mac (mDNS, else fallback IP)
-    fetchState();                                  // pulls usage AND sets the clock from the Mac's ts
-    syncRtcFromSystem();                           // write the (now-correct) Beijing time into the RTC
-    g_ws.begin(g_macIp.c_str(), ASR_PORT, "/");    // streaming-ASR server (persistent + auto-reconnect)
-    g_ws.onEvent(wsEvent);
-    g_ws.setReconnectInterval(3000);
+    // 网络(mDNS 解析 / WS 连接 / fetch / 对时)全部交给 netTask,主loop 不在此阻塞
   } else {
-    Serial.println("WiFi not connected (portal timeout) - running offline");
+    Serial.println("WiFi not connected - running offline");
   }
 
   int b = M5.Power.getBatteryLevel(); if (b >= 0) g_batt = constrain(b, 0, 100);
   readClock();
   Serial.printf("battery=%d  clock=%02d:%02d\n", g_batt, g_clkH, g_clkM);
+
+  g_voiceSB = xStreamBufferCreate(8192, 1);                                  // 语音 PCM:主loop -> netTask
+  xTaskCreatePinnedToCore(netTask, "net", 16384, nullptr, 1, nullptr, 0);    // 所有阻塞网络 IO 在 core0
 
   bootMs = millis();
   lastActiveMs = millis();
@@ -787,6 +1016,7 @@ static void fetchState() {
   http.setConnectTimeout(2500);
   http.setTimeout(3500);
   if (!http.begin(g_companionUrl)) return;
+  bool ok = false;
   int code = http.GET();
   if (code == 200) {
     JsonDocument doc;
@@ -802,11 +1032,14 @@ static void fetchState() {
         PROV[i].pending     = pr["pending_reviews"]     | PROV[i].pending;
         g_sReset[i] = pr["session"]["reset_epoch"] | 0L;
         g_wReset[i] = pr["weekly"]["reset_epoch"]  | 0L;
-        if (i == 0) { const char* m = pr["model"] | ""; if (m[0]) g_model = String(m); }
+        if (i == 0 || i == 1) { const char* m = pr["model"] | ""; char* dst = (i == 0) ? g_model : g_codexModel; if (m[0]) { strncpy(dst, m, sizeof(g_model) - 1); dst[sizeof(g_model) - 1] = 0; } }
       }
-      g_haveData = true;
+      g_haveData = true; ok = true;
       JsonObject lu = doc["lunar"];                  // 农历 / 生肖 for the watch face
-      if (!lu.isNull()) { g_lunar = String((const char*)(lu["date"] | "")); g_zodiac = String((const char*)(lu["zodiac"] | "")); }
+      if (!lu.isNull()) {
+        strncpy(g_lunar, (const char*)(lu["date"] | ""), sizeof(g_lunar) - 1); g_lunar[sizeof(g_lunar) - 1] = 0;
+        strncpy(g_zodiac, (const char*)(lu["zodiac"] | ""), sizeof(g_zodiac) - 1); g_zodiac[sizeof(g_zodiac) - 1] = 0;
+      }
       long ts = doc["ts"] | 0L;                      // Mac epoch -> set the device clock (NTP-independent)
       if (ts > 1700000000L && ts < 1900000000L) {
         struct timeval tv; tv.tv_sec = (time_t)ts; tv.tv_usec = 0; settimeofday(&tv, nullptr);
@@ -821,16 +1054,44 @@ static void fetchState() {
     Serial.printf("[fetch] HTTP %d\n", code);
   }
   http.end();
+  if (ok) { g_fetchFails = 0; g_companionOk = true; }
+  else if (++g_fetchFails >= 2) {                  // usage 接口不可达:自愈重连 + 把显示重置为 0
+    g_fetchFails = 0; g_companionOk = false; g_haveData = false;
+    for (int i = 0; i < 2; i++) { PROV[i].sessionUsed = 0; PROV[i].weeklyUsed = 0; PROV[i].pending = 0; }
+    g_model[0] = g_codexModel[0] = g_lunar[0] = g_zodiac[0] = 0;
+    resolveMac(); wsConnect();                     // IP drift self-heal (netTask 上下文)
+  }
 }
 
-static void reconfigWiFi() {                     // both buttons held -> re-open the WiFi portal
+// 所有阻塞网络 IO 都在这里(core 0):WS 维护/连接、HTTP fetch、mDNS、语音上行。主loop 永不等待。
+static void netTask(void*) {
+  bool started = false;
+  uint32_t lastFetch = 0;
+  for (;;) {
+    if (g_netPause) { started = false; vTaskDelay(20 / portTICK_PERIOD_MS); continue; }  // 门户接管 WiFi:让路(回来后重连)
+    if (g_wifi) {
+      if (!started || g_netReconnect) { g_netReconnect = false; resolveMac(); wsConnect(); started = true; lastFetch = 0; }
+      g_ws.loop();                                  // WS 维护(connect 阻塞只在本任务,不卡渲染)
+      if (g_netListenReq == 1)      { g_netListenReq = 0; wsListen(true); }
+      else if (g_netListenReq == 2) { g_netListenReq = 0; wsListen(false); }
+      uint8_t buf[1024]; size_t n;                  // 转发主loop采集的语音 PCM
+      while (g_wsConn && (n = xStreamBufferReceive(g_voiceSB, buf, sizeof(buf), 0)) > 0) g_ws.sendBIN(buf, n);
+      uint32_t now = millis();                      // 定时拉 usage(语音时让路)
+      if (!g_voice && (lastFetch == 0 || now - lastFetch > 30000)) { lastFetch = now; fetchState(); }
+    } else { started = false; }
+    vTaskDelay(5 / portTICK_PERIOD_MS);
+  }
+}
+
+static void reconfigWiFi() {                     // 设置页 -> 打开自研 WiFi 门户(历史/一键连/删除/扫描/手填)
   g_voice = false;
-  showSetupScreen("WiFi Setup", "join hotspot:  Codey-Setup", "then open  192.168.4.1");
-  WiFiManager wm;
-  wm.setConfigPortalTimeout(180);
-  wm.startConfigPortal("Codey-Setup");           // blocking: lets you pick a new network
+  bool ok = wifiConfigPortal();                  // 阻塞门户;内部已 g_netPause 让 netTask 放开 WiFi 栈
   g_wifi = (WiFi.status() == WL_CONNECTED);
-  if (g_wifi) { showSetupScreen("WiFi Connected", WiFi.localIP().toString().c_str(), ""); delay(1000); }
+  if (ok && g_wifi) {
+    { String s = WiFi.SSID(); strncpy(g_ssid, s.c_str(), sizeof(g_ssid) - 1); g_ssid[sizeof(g_ssid) - 1] = 0; }
+    showSetupScreen("WiFi Connected", WiFi.localIP().toString().c_str(), ""); delay(800);
+    g_netReconnect = true;                       // netTask 重新解析 Mac + 重连 WS + fetch(不在主loop阻塞)
+  }
   bootMs = millis();                             // reset the animation clock
 }
 
@@ -890,7 +1151,7 @@ static void settingsButtons() {
 void loop() {
   M5.update();
   uint32_t now = millis();
-  if (g_wifi) g_ws.loop();                       // service the streaming-ASR WebSocket + reconnect
+  // 网络全部在 netTask(core0);主loop 不调 g_ws.loop / fetchState,绝不等待网络
 
   static uint32_t bothSince = 0; static bool bothFired = false;   // hold BOTH ~0.4s -> toggle settings
   if (M5.BtnA.isPressed() && M5.BtnB.isPressed()) {
@@ -906,16 +1167,18 @@ void loop() {
     } else if (M5.BtnB.wasPressed() && !M5.BtnA.isPressed()) {   // right button -> voice command
       if (!g_voice) {                                      // start streaming
         g_voice = true; g_voiceT0 = now; g_micLevel = 0.12f;
-        g_transcript = ""; g_heardSpeech = false; g_silenceT0 = 0; g_noiseFloor = 0.06f;
+        g_transcript[0] = 0; g_heardSpeech = false; g_silenceT0 = 0; g_noiseFloor = 0.06f;
         g_sentSamples = 0; g_recEnd = 0; g_finalReqT0 = 0; g_sttFinal = false;
         if (g_micOK && g_audioBuf && g_wsConn) {
           g_vphase = 1;
-          wsListen(true);
+          if (g_voiceSB) xStreamBufferReset(g_voiceSB);
+          g_netListenReq = 1;                              // netTask -> listen:start
           M5.Mic.record(g_audioBuf, MAX_SAMPLES, REC_RATE);
           Serial.println("[voice] streaming");
         } else {                                           // can't stream -> show why
           g_vphase = 3; g_resultT0 = now;
-          g_transcript = String(!g_micOK ? "麦克风不可用" : !g_wsConn ? "语音服务未连接" : "缓冲不可用");
+          strncpy(g_transcript, !g_micOK ? "麦克风不可用" : !g_wsConn ? "语音服务未连接" : "缓冲不可用", sizeof(g_transcript) - 1);
+          g_transcript[sizeof(g_transcript) - 1] = 0;
         }
       } else if (g_vphase == 1) {
         g_recEnd = capturedSamples(); g_vphase = 2;        // press again -> stop & finalize
@@ -943,7 +1206,7 @@ void loop() {
         float on = g_noiseFloor + 0.12f, off = g_noiseFloor + 0.06f;
         if (g_micLevel > on) { g_heardSpeech = true; g_silenceT0 = 0; }
         else if (g_micLevel < off) { if (g_heardSpeech && g_silenceT0 == 0) g_silenceT0 = now; }
-        if (g_wsConn) g_ws.sendBIN((uint8_t*)chunk, STREAM_CHUNK * 2);
+        if (g_voiceSB) xStreamBufferSend(g_voiceSB, (uint8_t*)chunk, STREAM_CHUNK * 2, 0);  // -> netTask
         g_sentSamples += STREAM_CHUNK;
       }
       bool maxed   = (cap >= MAX_SAMPLES) || (g_micOK && !M5.Mic.isRecording());
@@ -952,12 +1215,12 @@ void loop() {
     } else if (g_vphase == 2) {                           // FINALIZE: flush tail, await the final stt
       while (g_sentSamples < g_recEnd) {                  // flush remaining audio (not real-time bound now)
         size_t n = g_recEnd - g_sentSamples; if (n > STREAM_CHUNK) n = STREAM_CHUNK;
-        if (g_wsConn) g_ws.sendBIN((uint8_t*)(g_audioBuf + g_sentSamples), n * 2);
+        if (g_voiceSB) xStreamBufferSend(g_voiceSB, (uint8_t*)(g_audioBuf + g_sentSamples), n * 2, 0);
         g_sentSamples += n;
       }
-      if (g_finalReqT0 == 0) { wsListen(false); g_finalReqT0 = now; }   // ask the server to finalize (once)
+      if (g_finalReqT0 == 0) { g_netListenReq = 2; g_finalReqT0 = now; }  // netTask -> listen:stop (finalize)
       if (g_sttFinal || now - g_finalReqT0 > 4000) {                    // got the final result (or timeout)
-        if (g_transcript.length() == 0) g_transcript = String("(没听清)");
+        if (g_transcript[0] == 0) { strncpy(g_transcript, "(没听清)", sizeof(g_transcript) - 1); g_transcript[sizeof(g_transcript) - 1] = 0; }
         g_vphase = 3; g_resultT0 = now;
       }
     } else if (g_vphase == 3) {                           // RESULT
@@ -984,9 +1247,10 @@ void loop() {
     int b = M5.Power.getBatteryLevel(); if (b >= 0) g_batt = constrain(b, 0, 100);
     readClock();
     g_wifi = (WiFi.status() == WL_CONNECTED);
-    if (g_wifi) g_ssid = WiFi.SSID();
+    if (g_wifi) { String s = WiFi.SSID(); strncpy(g_ssid, s.c_str(), sizeof(g_ssid) - 1); g_ssid[sizeof(g_ssid) - 1] = 0; }
+    if (timeSane(time(nullptr)) && !g_rtcSynced) { syncRtcFromSystem(); g_rtcSynced = true; }  // netTask set clock -> RTC once
   }
-  if (g_wifi && !g_voice && now - g_lastFetch > 30000) { g_lastFetch = now; fetchState(); }  // poll real usage
+  // 不在主loop poll usage:fetchState 已搬进 netTask(异步,不阻塞渲染)
   updateAnim(now);
   render();
   delay(g_voice ? 2 : 16);   // voice screen runs faster for a smoother orb

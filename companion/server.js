@@ -154,6 +154,67 @@ function readCodexUsage() {
   } catch (e) { return null; }
 }
 
+// Codex 最常用模型:codexbar 的 usage cache 不含模型,改从 Codex CLI 的会话 rollout 统计。
+// 取最近 60 个 session,各取众数 model(过滤后台任务如 codex-auto-review),再按 session 计频取 top1。
+const CODEX_SESS_DIRS = [
+  path.join(os.homedir(), '.codex', 'sessions'),
+  path.join(os.homedir(), '.codex', 'archived_sessions'),
+];
+const CODEX_MODEL_SKIP = /review|compact|summar|\btitle\b|auto-/i;   // 非用户选用的对话模型
+function prettyCodexModel(id) {
+  if (!id) return null;
+  const map = {
+    'gpt-5.5': 'GPT-5.5', 'gpt-5': 'GPT-5', 'gpt-5-codex': 'GPT-5 Codex',
+    'gpt-5.1': 'GPT-5.1', 'gpt-5.1-codex': 'GPT-5.1 Codex', 'gpt-5-pro': 'GPT-5 Pro',
+    'gpt-4.1': 'GPT-4.1', 'gpt-4o': 'GPT-4o',
+    'o3': 'o3', 'o3-mini': 'o3-mini', 'o4-mini': 'o4-mini',
+    'moonshot_kimi_k2_instruct_public': 'Kimi K2',
+  };
+  if (map[id]) return map[id];
+  const s = id.replace(/_/g, ' ').replace(/\bgpt\b/gi, 'GPT');
+  return s.split(' ').map((w) => (/^(GPT|o\d)/.test(w) ? w : w.charAt(0).toUpperCase() + w.slice(1))).join(' ');
+}
+function walkJsonl(dir) {
+  const out = [];
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, ent.name);
+    if (ent.isDirectory()) { try { out.push(...walkJsonl(p)); } catch (e) {} }
+    else if (ent.name.endsWith('.jsonl')) out.push(p);
+  }
+  return out;
+}
+function readHead(f, bytes) {
+  const fd = fs.openSync(f, 'r');
+  try { const buf = Buffer.alloc(bytes); const n = fs.readSync(fd, buf, 0, bytes, 0); return buf.toString('utf8', 0, n); }
+  finally { fs.closeSync(fd); }
+}
+let _cxModel = { val: null, at: 0 };
+function readCodexModel() {
+  const now = Date.now();
+  if (now - _cxModel.at < 10 * 60 * 1000) return _cxModel.val;        // 10 分钟缓存(扫文件较重)
+  try {
+    let files = [];
+    for (const d of CODEX_SESS_DIRS) { try { files.push(...walkJsonl(d)); } catch (e) {} }
+    files = files.map((f) => ({ f, m: fs.statSync(f).mtimeMs })).sort((a, b) => b.m - a.m).slice(0, 60).map((x) => x.f);
+    const re = /"model"\s*:\s*"([^"]{1,60})"/g;
+    const freq = {};
+    for (const f of files) {
+      const cnt = {};
+      let head;
+      try { head = readHead(f, 65536); } catch (e) { continue; }      // 前 64KB 足够定 model
+      let m; re.lastIndex = 0;
+      while ((m = re.exec(head))) cnt[m[1]] = (cnt[m[1]] || 0) + 1;
+      let best = null, bc = -1;                                        // 该 session 的代表 model = 众数(过滤后台任务)
+      for (const k in cnt) { if (CODEX_MODEL_SKIP.test(k)) continue; if (cnt[k] > bc) { bc = cnt[k]; best = k; } }
+      if (best) freq[best] = (freq[best] || 0) + 1;
+    }
+    let top = null, tc = -1;
+    for (const k in freq) if (freq[k] > tc) { tc = freq[k]; top = k; }
+    _cxModel = { val: prettyCodexModel(top), at: now };
+  } catch (e) { _cxModel = { val: _cxModel.val, at: now }; }
+  return _cxModel.val;
+}
+
 function buildState() {
   const now = Math.floor(Date.now() / 1000);
   const real = readRealUsage();
@@ -183,6 +244,7 @@ function buildState() {
     session: { used_pct: cx && cx.session ? cx.session.pct : 0, reset_epoch: cx && cx.session ? cx.session.reset : now },
     weekly: { used_pct: cx && cx.weekly ? cx.weekly.pct : 0, reset_epoch: cx && cx.weekly ? cx.weekly.reset : endOfWeekEpoch() },
     pending_reviews: 0,
+    model: readCodexModel(),                        // 最常用模型(从 Codex CLI 会话统计)
     _src: cx ? 'codexbar' : 'none',
   };
 
