@@ -68,3 +68,6 @@ codey_dev_last.wav
 companion/models/**/*.bin
 companion/models/**/*.onnx
 companion/models/**/*.int8.onnx
+
+# Superpowers brainstorming (visual companion) scratch dir
+.superpowers/
