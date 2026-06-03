@@ -4,7 +4,8 @@
   "private": true,
   "description": "Serves normalized Claude Code / Codex usage to the Codey watch (GET /codey/state).",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "lunar-javascript": "^1.7.7"
