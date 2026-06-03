@@ -11,11 +11,15 @@ function pickLatestTranscript(files, startedAtMs, claimedSids) {
 }
 
 function listTranscripts(projDir) {
-  try {
-    return fs.readdirSync(projDir)
-      .filter((n) => n.endsWith('.jsonl'))
-      .map((n) => ({ sid: n.replace(/\.jsonl$/, ''), path: path.join(projDir, n), mtimeMs: fs.statSync(path.join(projDir, n)).mtimeMs }));
-  } catch (_) { return []; }
+  let names = [];
+  try { names = fs.readdirSync(projDir).filter((n) => n.endsWith('.jsonl')); }
+  catch (_) { return []; }
+  return names.flatMap((n) => {
+    const p = path.join(projDir, n);
+    try {
+      return [{ sid: n.replace(/\.jsonl$/, ''), path: p, mtimeMs: fs.statSync(p).mtimeMs }];
+    } catch (_) { return []; }
+  });
 }
 
 // cwd -> Claude project 目录名(把非字母数字换成 '-')
@@ -64,7 +68,7 @@ function defaultClaudeHomeDirs() {
   try {
     for (const n of fs.readdirSync(home)) if (/^\.claude/.test(n)) {
       const p = path.join(home, n);
-      if (fs.existsSync(path.join(p, 'sessions'))) dirs.add(p);
+      try { if (fs.existsSync(path.join(p, 'sessions'))) dirs.add(p); } catch (_) {}
     }
   } catch (_) {}
   if (dirs.size === 0) dirs.add(path.join(home, '.claude'));
@@ -75,16 +79,18 @@ function defaultClaudeHomeDirs() {
 function listCodexRollouts(codexRoot, limit = 40) {
   const root = path.join(codexRoot, 'sessions');
   const out = [];
-  const walk = (dir) => {
+  const walk = (dir, depth = 0) => {
+    if (depth > 5) return;
     let ents = [];
     try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
     for (const e of ents) {
+      if (e.isSymbolicLink()) continue;
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) walk(p);
+      if (e.isDirectory()) walk(p, depth + 1);
       else if (/^rollout-.*\.jsonl$/.test(e.name)) { try { out.push({ path: p, mtimeMs: fs.statSync(p).mtimeMs }); } catch (_) {} }
     }
   };
-  walk(root);
+  walk(root, 0);
   return out.sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, limit);
 }
 

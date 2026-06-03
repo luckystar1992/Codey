@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const os = require('os'); const fs = require('fs'); const path = require('path');
-const { pickLatestTranscript, countSubagents, discoverClaudeSessions } = require('../lib/discover');
+const { pickLatestTranscript, countSubagents, discoverClaudeSessions, encodeCwd } = require('../lib/discover');
 
 test('pickLatestTranscript 选 mtime≥startedAt 且未占用的最新 jsonl', () => {
   const files = [
@@ -17,13 +17,14 @@ test('discoverClaudeSessions:临时目录里读 session 文件 + transcript', ()
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codey-home-'));
   const claude = path.join(home, '.claude');
   const sessions = path.join(claude, 'sessions');
-  const encoded = '-Users-zyc-code-Demo';
+  const cwd = '/Users/zyc/code/Demo';
+  const encoded = encodeCwd(cwd);
   const projDir = path.join(claude, 'projects', encoded);
   fs.mkdirSync(sessions, { recursive: true });
   fs.mkdirSync(projDir, { recursive: true });
   const pid = process.pid;        // 用本进程 pid 保证"存活"
   fs.writeFileSync(path.join(sessions, pid + '.json'),
-    JSON.stringify({ pid, sessionId: 'sid-demo', cwd: '/Users/zyc/code/Demo', startedAt: 1000 }));
+    JSON.stringify({ pid, sessionId: 'sid-demo', cwd, startedAt: 1000 }));
   fs.writeFileSync(path.join(projDir, 'sid-demo.jsonl'),
     JSON.stringify({ type: 'assistant', timestamp: '2026-06-03T10:00:00Z',
       message: { model: 'claude-opus-4-8', usage: { input_tokens: 50, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, content: [{ type: 'text', text: 'hi' }] } }));
