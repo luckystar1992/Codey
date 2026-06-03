@@ -9,6 +9,8 @@ const { readPs, readListenPorts, descendantsOf } = require('./processTree');
 const { readGitStats } = require('./gitStats');
 const discover = require('./discover');
 
+const CODEX_FRESH_WINDOW_MS = 5 * 60 * 1000;   // 仅展示 5 分钟内活跃/近期结束的 Codex 会话
+
 function hasActiveDescendant(psMap, pid, threshold = 5) {
   for (const d of descendantsOf(psMap, pid)) {
     const info = psMap.get(d);
@@ -19,7 +21,9 @@ function hasActiveDescendant(psMap, pid, threshold = 5) {
 
 function portsForTree(psMap, portsMap, pid) {
   const set = new Set();
-  for (const d of [pid, ...descendantsOf(psMap, pid)]) for (const p of (portsMap.get(d) || [])) set.add(p);
+  for (const d of [pid, ...descendantsOf(psMap, pid)]) {
+    for (const p of (portsMap.get(d) || [])) set.add(p);
+  }
   return [...set].sort((a, b) => a - b);
 }
 
@@ -51,7 +55,7 @@ async function collectSessions() {
       sessionId: d.sessionId, cwd: d.cwd, startedAt: d.startedAt, parsed, status, git,
       ports: portsForTree(psMap, portsMap, d.pid),
       subagents: discover.countSubagents(d.subagentsDir),
-      effort: '',
+      effort: '',   // TODO: derive from settings precedence chain (env / project / global effortLevel)
     }));
   }
 
@@ -62,7 +66,7 @@ async function collectSessions() {
     let text = ''; try { text = fs.readFileSync(roll.path, 'utf8'); } catch (_) {}
     const parsed = parseCodexRollout(text);
     if (!parsed.sessionId) continue;
-    const fresh = (Date.now() - roll.mtimeMs) < 5 * 60 * 1000;   // 5 分钟内才算活跃/近期
+    const fresh = (Date.now() - roll.mtimeMs) < CODEX_FRESH_WINDOW_MS;
     if (!fresh) continue;
     const status = deriveStatus({ done: parsed.done, modelGenerating: false });
     const git = await readGitStats(parsed.cwd);
