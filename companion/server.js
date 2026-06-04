@@ -50,6 +50,21 @@ const PROMPT = '简体中文普通话。Claude Code,Codex,额度,周额度,还�
 const env = { ...process.env, https_proxy: PROXY, http_proxy: PROXY, all_proxy: PROXY };
 const clampPct = (x) => Math.max(0, Math.min(100, Math.round(x)));
 
+const { collectSessions, aggregateProvider } = require('./lib/collectSessions');
+
+// 会话采集缓存(异步定时刷新,避免每次请求阻塞)
+let sessionCache = { claude: [], codex: [] };
+let sessionRefreshing = false;
+async function refreshSessions() {
+  if (sessionRefreshing) return;     // in-flight 锁:上一次没跑完就跳过,防止 tick 叠加
+  sessionRefreshing = true;
+  try { sessionCache = await collectSessions(); }
+  catch (e) { console.error('collectSessions failed:', e.message); }
+  sessionRefreshing = false;
+}
+refreshSessions();
+setInterval(refreshSessions, 2000);                 // 快 tick ~2s
+
 // ---- transcript de-hallucination (whisper invents filler on faint/short/non-speech audio) ----
 const HALLUC = [/^(你好)+$/, /欢迎(收看|观看)/, /请[^ ]{0,3}(订阅|关注|点赞)/, /谢谢(大家)?(观看|收看)/,
                 /^字幕/, /明镜|点点栏目/, /thanks? for watching/i, /^(嗯|啊|呃|哦)+$/];
@@ -223,6 +238,15 @@ function buildState() {
   const fiveH = real && real.five_hour && typeof real.five_hour.used_percentage === 'number';
   const sevenD = real && real.seven_day && typeof real.seven_day.used_percentage === 'number';
 
+  const sortSessions = (arr) => [...arr].sort((a, b) => {
+    const rank = (s) => (s.status === 'executing' ? 0 : s.status === 'thinking' ? 1 : 2);
+    return rank(a) - rank(b) || b.context_pct - a.context_pct;
+  });
+  const claudeSessions = sortSessions(sessionCache.claude);
+  const codexSessions = sortSessions(sessionCache.codex);
+  const claudeAgg = aggregateProvider(claudeSessions);
+  const codexAgg = aggregateProvider(codexSessions);
+
   const claude = {
     id: 'claude', name: 'Claude Code',
     session: {
@@ -236,6 +260,9 @@ function buildState() {
     pending_reviews: 0,
     model: (real && real.model) ? real.model : null,
     _src: fiveH ? 'statusline' : 'ccusage',
+    sessions: claudeSessions,
+    active_count: claudeAgg.active_count,
+    agg: { dirty_repos: claudeAgg.dirty_repos, tokens_per_min: 0 },
   };
 
   const cx = readCodexUsage();
@@ -246,6 +273,9 @@ function buildState() {
     pending_reviews: 0,
     model: readCodexModel(),                        // 最常用模型(从 Codex CLI 会话统计)
     _src: cx ? 'codexbar' : 'none',
+    sessions: codexSessions,
+    active_count: codexAgg.active_count,
+    agg: { dirty_repos: codexAgg.dirty_repos, tokens_per_min: 0 },
   };
 
   return {
