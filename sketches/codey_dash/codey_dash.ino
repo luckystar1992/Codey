@@ -1328,6 +1328,8 @@ void loop() {
     }
     // 单击延迟派发(等过双击窗口确认不是双击)
     if (g_pendTapRow != -2 && now - g_pendTapMs >= DBL_MS) { doTap(g_pendTapRow); g_pendTapRow = -2; }
+  } else {                                   // 进入设置/语音态:清手势残留(防退出后用旧坐标误滚动)
+    g_tDown = false; g_tAxis = 0; g_tProv = -1; g_pendTapRow = -2;
   }
 
   static uint32_t bothSince = 0; static bool bothFired = false;   // hold BOTH ~0.4s -> toggle settings
@@ -1364,6 +1366,7 @@ void loop() {
       }
     } else if (!g_voice && !M5.BtnB.isPressed()) {              // 左键:短按切页/翻会话,长按进/出详情
       static uint32_t aDownAt = 0; static bool aLong = false;
+      if (!M5.BtnA.isPressed() && !M5.BtnA.wasReleased()) { aDownAt = 0; aLong = false; }  // 空闲重置:防按键被 BtnB 打断后残留长按态
       if (M5.BtnA.wasPressed()) { aDownAt = now; aLong = false; }
       if (M5.BtnA.isPressed() && !aLong && aDownAt && now - aDownAt > 550) { aLong = true; btnALong(); }
       if (M5.BtnA.wasReleased()) { if (!aLong) btnAShort(); aDownAt = 0; }
