@@ -17,7 +17,9 @@
 - 点按某会话进入**单会话详情**,看到更全字段。
 - 保留现有的吉祥物动画与表盘页。
 
-## 2. 数据采集(移植 abtop 算法到 Node companion)
+## 2. 数据采集(移植 abtop 算法到 **Python** companion)
+
+> 实现说明(2026-06-04 更新):companion 由 Node 改为**纯 Python 标准库**实现(`companion/codey/` 包 + `codey_companion.py` 入口),**零 pip 依赖、零联网**——删除了原 ccusage(npx)这一唯一外连。账号额度只读本地 `~/.claude/codey-usage.json`(statusline 截获)与 codexbar 本地缓存;`/codey/state` 契约与端口 8787 不变,固件零改动。原 Node 实现(server.js + lib)及其 TDD 计划(`plans/2026-06-03-companion-session-collectors.md`)已被本 Python 版取代,仅留作历史。
 
 全部在 Mac 上读本地文件 / 跑 `ps`/`lsof`/`git`。abtop 原实现假设 Linux `/proc`,移植时改用 macOS 等价手段。
 
