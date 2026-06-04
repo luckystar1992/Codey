@@ -577,6 +577,14 @@ static int detailProv = -1, detailIdx = 0;
 static const int ROW_H = 47, LIST_TOP = 116, LIST_BOT = 56;
 static int g_scroll[2] = { 0, 0 };                       // claude/codex 各自的滚动像素偏移
 
+// 触摸手势(466 屏内阈值)
+static const int  TAP_MOVE = 12, SWIPE_MIN = 56; static const uint32_t DBL_MS = 300;
+static bool     g_tDown = false; static int g_tx0 = 0, g_ty0 = 0; static int g_tStartScroll = 0;
+static char     g_tAxis = 0;                 // 0 未定 / 'x' / 'y'
+static int      g_tProv = -1;                // 竖拖作用的列表 provIdx(-1=非列表页)
+static uint32_t g_lastTapMs = 0;             // 双击判定
+static uint32_t g_pendTapMs = 0; static int g_pendTapRow = -2;   // 待派发的单击(row:-1空白,-2无)
+
 static int listViewH() { return SIZE - LIST_TOP - LIST_BOT; }
 static int maxScrollFor(int provIdx) {
   int content = PROV[provIdx].nsess * ROW_H;
@@ -1235,10 +1243,92 @@ static void settingsButtons() {
   }
 }
 
+// ---- 触摸手势辅助函数 ----
+static int curListProv() { return (detailProv < 0 && page >= 1 && page <= 2) ? page - 1 : -1; }
+
+// 列表页:由屏幕 y 命中会话行号;-1 = 空白
+static int rowHitAt(int provIdx, int ty) {
+  if (ty < LIST_TOP || ty > SIZE - LIST_BOT) return -1;
+  int idx = (g_scroll[provIdx] + (ty - LIST_TOP)) / ROW_H;
+  return (idx >= 0 && idx < PROV[provIdx].nsess) ? idx : -1;
+}
+
+// 全局最忙(仪表盘单击进详情)
+static bool globalTop(int& prov, int& idx) {
+  SessRef refs[MAX_SESS * 2]; int n = collectSorted(refs, MAX_SESS * 2);
+  if (n == 0) return false;
+  prov = refs[0].prov; idx = refs[0].idx; return true;
+}
+
+static void enterDetail(int prov, int idx) { detailProv = prov; detailIdx = idx; }
+static void exitDetail() { detailProv = -1; }
+
+// 横滑:详情切会话,否则切页。dir:+1 下一 / -1 上一
+static void swipePage(int dir) {
+  if (detailProv >= 0) {
+    int n = PROV[detailProv].nsess; if (n > 0) detailIdx = (detailIdx + dir + n) % n;
+  } else {
+    page = (page + dir + 3) % 3;
+  }
+}
+
+// 单击派发:列表点行=该会话,点空白=置顶;仪表盘=全局最忙;详情不响应单击
+static void doTap(int row) {
+  if (detailProv >= 0) return;
+  if (page == 0) { int pr, ix; if (globalTop(pr, ix)) enterDetail(pr, ix); }
+  else {
+    int pi = page - 1;
+    if (PROV[pi].nsess == 0) return;
+    enterDetail(pi, row >= 0 ? row : 0);
+  }
+}
+
+// 长按 BtnA:列表→置顶详情;详情→返回列表
+static void btnALong() {
+  if (detailProv >= 0) { exitDetail(); return; }
+  int pi = curListProv();
+  if (pi >= 0 && PROV[pi].nsess > 0) enterDetail(pi, 0);
+}
+// 短按 BtnA:详情翻下一会话;否则切页
+static void btnAShort() {
+  if (detailProv >= 0) { int n = PROV[detailProv].nsess; if (n > 0) detailIdx = (detailIdx + 1) % n; }
+  else page = (page + 1) % 3;
+}
+
 void loop() {
   M5.update();
   uint32_t now = millis();
   // 网络全部在 netTask(core0);主loop 不调 g_ws.loop / fetchState,绝不等待网络
+
+  // ---- 触摸手势(仅非设置/非语音态)----
+  if (!g_inSettings && !g_voice) {
+    auto td = M5.Touch.getDetail();
+    if (td.wasPressed()) {
+      g_tDown = true; g_tx0 = td.x; g_ty0 = td.y; g_tAxis = 0;
+      g_tProv = curListProv(); g_tStartScroll = (g_tProv >= 0) ? g_scroll[g_tProv] : 0;
+    } else if (g_tDown && td.isPressed()) {
+      int dx = td.x - g_tx0, dy = td.y - g_ty0;
+      if (!g_tAxis && (abs(dx) > TAP_MOVE || abs(dy) > TAP_MOVE)) g_tAxis = (abs(dx) > abs(dy)) ? 'x' : 'y';
+      if (g_tAxis == 'y' && g_tProv >= 0) {                     // 竖拖滚动列表
+        int ns = g_tStartScroll - dy;
+        int mx = maxScrollFor(g_tProv); ns = ns < 0 ? 0 : (ns > mx ? mx : ns);
+        g_scroll[g_tProv] = ns;
+      }
+      lastActiveMs = now;
+    } else if (g_tDown && td.wasReleased()) {
+      int dx = td.x - g_tx0, dy = td.y - g_ty0;
+      if (g_tAxis == 'x' && abs(dx) >= SWIPE_MIN) swipePage(dx < 0 ? 1 : -1);   // 横滑
+      else if (g_tAxis == 0 && abs(dx) < TAP_MOVE && abs(dy) < TAP_MOVE) {       // 点击 -> 单/双击判定
+        if (now - g_lastTapMs < DBL_MS) { g_lastTapMs = 0; g_pendTapRow = -2;    // 双击 -> 退出详情
+          if (detailProv >= 0) exitDetail(); }
+        else { g_lastTapMs = now;                                                // 记一次单击,延迟派发
+          g_pendTapMs = now; g_pendTapRow = (g_tProv >= 0) ? rowHitAt(g_tProv, g_ty0) : -1; }
+      }
+      g_tDown = false; g_tAxis = 0; g_tProv = -1; lastActiveMs = now;
+    }
+    // 单击延迟派发(等过双击窗口确认不是双击)
+    if (g_pendTapRow != -2 && now - g_pendTapMs >= DBL_MS) { doTap(g_pendTapRow); g_pendTapRow = -2; }
+  }
 
   static uint32_t bothSince = 0; static bool bothFired = false;   // hold BOTH ~0.4s -> toggle settings
   if (M5.BtnA.isPressed() && M5.BtnB.isPressed()) {
@@ -1272,9 +1362,11 @@ void loop() {
       } else if (g_vphase == 3) {
         g_voice = false; g_vphase = 0;                     // dismiss the result
       }
-    } else if (!g_voice && M5.BtnA.wasPressed() && !M5.BtnB.isPressed()) {  // left -> switch page
-      page = (page + 1) % 3;                                        // dashboard / claude / codex
-      Serial.printf("[btnA] page=%d\n", page);
+    } else if (!g_voice && !M5.BtnB.isPressed()) {              // 左键:短按切页/翻会话,长按进/出详情
+      static uint32_t aDownAt = 0; static bool aLong = false;
+      if (M5.BtnA.wasPressed()) { aDownAt = now; aLong = false; }
+      if (M5.BtnA.isPressed() && !aLong && aDownAt && now - aDownAt > 550) { aLong = true; btnALong(); }
+      if (M5.BtnA.wasReleased()) { if (!aLong) btnAShort(); aDownAt = 0; }
     }
   }
 
@@ -1322,7 +1414,8 @@ void loop() {
   float motion = fabsf(mag - g_accMag); g_accMag = mag;
   bool active = M5.BtnA.isPressed() || M5.BtnB.isPressed() || motion > 0.10f;
   if (!g_dim && !g_voice && mag > 1.9f && now - g_lastShake > 900) {     // shake -> next page
-    page = (page + 1) % 3; g_lastShake = now; active = true;
+    if (detailProv < 0) page = (page + 1) % 3;                  // 详情态下摇晃不切页
+    g_lastShake = now; active = true;
     Serial.printf("[shake] page=%d\n", page);
   }
   if (active) lastActiveMs = now;
