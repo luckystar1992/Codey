@@ -15,6 +15,7 @@ function git(cwd, args, timeout = 4000) {
 }
 
 async function readGitStats(cwd) {
+  if (!cwd) return { branch: '', added: 0, modified: 0 };
   const branch = await git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const stat = await git(cwd, ['diff', '--shortstat']);
   return { branch: branch || '', ...parseGitShortstat(stat) };

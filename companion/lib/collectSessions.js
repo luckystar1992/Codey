@@ -61,13 +61,15 @@ async function collectSessions() {
 
   // ---- Codex ----
   const codex = [];
+  const seenCodex = new Set();
   const codexRoot = path.join(os.homedir(), '.codex');
   for (const roll of discover.listCodexRollouts(codexRoot)) {
     let text = ''; try { text = fs.readFileSync(roll.path, 'utf8'); } catch (_) {}
     const parsed = parseCodexRollout(text);
-    if (!parsed.sessionId) continue;
+    if (!parsed.sessionId || seenCodex.has(parsed.sessionId)) continue;
+    seenCodex.add(parsed.sessionId);                 // 标记最新 rollout 代表该会话
     const fresh = (Date.now() - roll.mtimeMs) < CODEX_FRESH_WINDOW_MS;
-    if (!fresh) continue;
+    if (!fresh) continue;                            // 最新都不新鲜→该会话整体跳过
     const status = deriveStatus({ done: parsed.done, modelGenerating: false });
     const git = await readGitStats(parsed.cwd);
     codex.push(buildCodexSession({ parsed, startedAt: roll.mtimeMs, status, git, ports: [], subagents: 0 }));
