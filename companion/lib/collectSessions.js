@@ -76,4 +76,11 @@ async function collectSessions() {
   return { claude, codex };
 }
 
-module.exports = { collectSessions, hasActiveDescendant, aggregateProvider, portsForTree };
+function tokensPerMin(prev, cur) {
+  if (!prev || !cur) return 0;
+  const dt = (cur.at - prev.at) / 60000;
+  if (dt <= 0) return 0;
+  return Math.max(0, Math.round((cur.tokens - prev.tokens) / dt));
+}
+
+module.exports = { collectSessions, hasActiveDescendant, aggregateProvider, portsForTree, tokensPerMin };

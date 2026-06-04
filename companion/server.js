@@ -56,15 +56,24 @@ const sortSessions = (arr) => [...arr].sort((a, b) => {
   return rank(a) - rank(b) || b.context_pct - a.context_pct;
 });
 
-const { collectSessions, aggregateProvider } = require('./lib/collectSessions');
+const { collectSessions, aggregateProvider, tokensPerMin } = require('./lib/collectSessions');
 
 // 会话采集缓存(异步定时刷新,避免每次请求阻塞)
 let sessionCache = { claude: [], codex: [] };
+let tokRate = { claude: { prev: null, val: 0 }, codex: { prev: null, val: 0 } };
 let sessionRefreshing = false;
 async function refreshSessions() {
   if (sessionRefreshing) return;     // in-flight 锁:上一次没跑完就跳过,防止 tick 叠加
   sessionRefreshing = true;
-  try { sessionCache = await collectSessions(); }
+  try {
+    sessionCache = await collectSessions();
+    for (const id of ['claude', 'codex']) {
+      const total = (sessionCache[id] || []).reduce((s, x) => s + (x.tokens_total || 0), 0);
+      const cur = { tokens: total, at: Date.now() };
+      tokRate[id].val = tokensPerMin(tokRate[id].prev, cur);
+      tokRate[id].prev = cur;
+    }
+  }
   catch (e) { console.error('collectSessions failed:', e.message); }
   finally { sessionRefreshing = false; }
 }
@@ -264,7 +273,7 @@ function buildState() {
     _src: fiveH ? 'statusline' : 'ccusage',
     sessions: claudeSessions,
     active_count: claudeAgg.active_count,
-    agg: { dirty_repos: claudeAgg.dirty_repos, tokens_per_min: 0 },
+    agg: { dirty_repos: claudeAgg.dirty_repos, tokens_per_min: tokRate.claude.val },
   };
 
   const cx = readCodexUsage();
@@ -277,7 +286,7 @@ function buildState() {
     _src: cx ? 'codexbar' : 'none',
     sessions: codexSessions,
     active_count: codexAgg.active_count,
-    agg: { dirty_repos: codexAgg.dirty_repos, tokens_per_min: 0 },
+    agg: { dirty_repos: codexAgg.dirty_repos, tokens_per_min: tokRate.codex.val },
   };
 
   return {
