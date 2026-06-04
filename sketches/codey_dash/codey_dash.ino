@@ -602,7 +602,6 @@ static void renderDashboard() {
   cv.setTextColor(c565(0x8a9097)); cv.drawString(hdr, CX, 52);
 
   // 双吉祥物 + 中央活跃计数 a·b
-  long t = millis();
   drawMiniMascot(CX - 96, 104, 30, COL_CLAUDE, true,  ST_EXECUTING);
   drawMiniMascot(CX + 96, 104, 30, COL_CODEX,  false, ST_THINKING);
   cv.setFont(&fonts::FreeSans9pt7b); cv.setTextColor(c565(0x8a9097)); cv.setTextDatum(middle_center);
@@ -653,7 +652,6 @@ static void renderDashboard() {
 
   drawWifiStatus(406);
   drawDots(0, COL_WHITE);
-  (void)t;
 }
 static void renderListPage(int i)   { placeholder(PROV[i].name); }
 static void renderDetailPage()      { placeholder("DETAIL"); }
