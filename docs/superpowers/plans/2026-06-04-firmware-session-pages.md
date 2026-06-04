@@ -183,6 +183,8 @@ int main() {
   modelShort("gpt-5.1-codex-mini", b, sizeof(b));         assert(!strcmp(b, "GPT-5.1"));
   modelShort("", b, sizeof(b));                            assert(!strcmp(b, ""));
   modelShort("Opus 4.8", b, sizeof(b));                    assert(!strcmp(b, "Opus 4.8"));
+  // 越界回归:超长数字串不得溢出内部 ver[12](v<VMAX 保护,版本截断到 11 位)
+  modelShort("claude-opus-99999999999999999999", b, sizeof(b)); assert(!strcmp(b, "Opus 99999999999"));
 
   (void)S;
   printf("codey_ui tests: ALL PASS\n");
@@ -288,15 +290,15 @@ static inline void modelShort(const char* full, char* out, size_t outSz) {
   if (!base) { snprintf(out, outSz, "%s", full); return; }   // unknown -> passthrough
 
   // version: first digit group, optional .second group (sep '.' or '-')
-  char ver[12] = {0}; int v = 0;
-  for (size_t j = 0; low[j] && v < (int)sizeof(ver) - 1; j++) {
+  char ver[12] = {0}; int v = 0; const int VMAX = (int)sizeof(ver) - 1;   // every write guarded by v<VMAX
+  for (size_t j = 0; low[j] && v < VMAX; j++) {
     if (low[j] >= '0' && low[j] <= '9') {
       ver[v++] = low[j];                                     // major digits
       size_t kk = j + 1;
-      while (low[kk] >= '0' && low[kk] <= '9') ver[v++] = low[kk++];
-      if ((low[kk] == '.' || low[kk] == '-') && low[kk + 1] >= '0' && low[kk + 1] <= '9') {
+      while (low[kk] >= '0' && low[kk] <= '9' && v < VMAX) ver[v++] = low[kk++];
+      if ((low[kk] == '.' || low[kk] == '-') && low[kk + 1] >= '0' && low[kk + 1] <= '9' && v < VMAX) {
         ver[v++] = '.'; kk++;
-        while (low[kk] >= '0' && low[kk] <= '9') ver[v++] = low[kk++];
+        while (low[kk] >= '0' && low[kk] <= '9' && v < VMAX) ver[v++] = low[kk++];
       }
       break;
     }

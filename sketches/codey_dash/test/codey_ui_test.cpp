@@ -52,6 +52,8 @@ int main() {
   modelShort("gpt-5.1-codex-mini", b, sizeof(b));         assert(!strcmp(b, "GPT-5.1"));
   modelShort("", b, sizeof(b));                            assert(!strcmp(b, ""));
   modelShort("Opus 4.8", b, sizeof(b));                    assert(!strcmp(b, "Opus 4.8"));
+  // 越界回归:超长数字串不得溢出内部 ver[12](v<VMAX 保护,版本截断到 11 位)
+  modelShort("claude-opus-99999999999999999999", b, sizeof(b)); assert(!strcmp(b, "Opus 99999999999"));
 
   (void)S;
   printf("codey_ui tests: ALL PASS\n");
