@@ -747,7 +747,7 @@ static void renderListPage(int provIdx) {
   const Prov& p = PROV[provIdx];
   uint32_t color = p.color;
 
-  // 单弧缓存在 g_ringB(列表/详情共用),pct 变化才重算
+  // 单弧缓存在 g_ringB(仅列表用;详情页直接画 cv),pct 变化才重算
   static int rbPct = -1; static uint32_t rbCol = 0;
   if (g_ringBok) {
     if (p.weekUsed != rbPct || color != rbCol) {

@@ -57,9 +57,8 @@ static const int SIZE = 466, CX = 233, CY = 233;
 
 // ---------- canvas + state ----------
 static M5Canvas cv(&M5.Display);
-static M5Canvas g_ringA(&M5.Display), g_ringB(&M5.Display);   // page0/1 各缓存一张 AA 环,切页只 copy
+static M5Canvas g_ringA(&M5.Display), g_ringB(&M5.Display);   // 仪表盘/列表各缓存一张 AA 环;每页 render 用函数内 static 记 pct 缓存键
 static bool     g_ringAok = false, g_ringBok = false;
-static int      g_ringApct = -1, g_ringBpct = -1; static uint32_t g_ringAcol = 0, g_ringBcol = 0;
 static int      page = 0;
 static uint32_t bootMs = 0;
 static uint32_t lastSecMs = 0;
@@ -668,7 +667,7 @@ static void renderListPage(int provIdx) {
   const Prov& p = PROV[provIdx];
   uint32_t color = p.color;
 
-  // 单弧缓存在 g_ringB(列表/详情共用),pct 变化才重算
+  // 单弧缓存在 g_ringB(仅列表用;详情页直接画 cv),pct 变化才重算
   static int rbPct = -1; static uint32_t rbCol = 0;
   if (g_ringBok) {
     if (p.weekUsed != rbPct || color != rbCol) {
