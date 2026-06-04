@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codey 圆屏交互模拟 · Agent 会话监视器</title>
+<style>
+  :root{ --orange:#ff9d3c; --green:#3ccb7f; --ink:#e6e8ec; --dim:#8b9097; --faint:#5a5d64; }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; background:#0c0d10; color:#cfd2d8;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .wrap{ min-height:100%; display:flex; flex-direction:column; align-items:center; gap:18px; padding:26px 14px 40px; }
+  h1{ font-size:15px; color:#9aa0a8; font-weight:600; letter-spacing:.5px; margin:0; }
+  .hint{ font-size:12px; color:var(--dim); text-align:center; line-height:1.7; max-width:520px; }
+  .hint b{ color:var(--ink); }
+  .hint kbd{ background:#1c1e23; border:1px solid #34373e; border-radius:5px; padding:1px 6px; color:#cfd2d8; }
+
+  /* ---- watch body ---- */
+  .device{ position:relative; display:flex; align-items:center; gap:0; }
+  .btn{ width:16px; height:74px; background:linear-gradient(90deg,#23262c,#15171b); border:1px solid #34373e;
+        cursor:pointer; position:relative; z-index:3; user-select:none; }
+  .btn.left{ border-radius:6px 0 0 6px; border-right:none; margin-right:-2px; }
+  .btn.right{ border-radius:0 6px 6px 0; border-left:none; margin-left:-2px; }
+  .btn:active{ background:#2c2f36; }
+  .btn .lbl{ position:absolute; top:50%; white-space:nowrap; font-size:10px; color:var(--dim); }
+  .btn.left .lbl{ right:24px; transform:translateY(-50%); text-align:right; }
+  .btn.right .lbl{ left:24px; transform:translateY(-50%); }
+
+  .bezel{ width:380px; height:380px; border-radius:50%; background:#000;
+          box-shadow:0 0 0 8px #1b1d22, 0 0 0 11px #34373e, 0 18px 50px rgba(0,0,0,.6);
+          position:relative; overflow:hidden; touch-action:none; }
+  .screen{ position:absolute; inset:0; }
+  .layer{ position:absolute; inset:0; }
+  .scr{ position:absolute; left:0; right:0; text-align:center; color:var(--ink); }
+
+  /* edge arcs */
+  .arc{ position:absolute; inset:11px; border-radius:50%; border:8px solid transparent; }
+
+  /* mascots */
+  .mC{ border-radius:50%; background:radial-gradient(circle at 35% 32%,#ffd9ab,#d2691e); position:relative; }
+  .mC::before,.mC::after{ content:""; position:absolute; background:#2a1607; border-radius:40%; }
+  .mG{ border-radius:30%; background:radial-gradient(circle at 35% 32%,#a9f0cf,#1f8f5e); position:relative; }
+  .mG::before,.mG::after{ content:""; position:absolute; background:#06281a; border-radius:50%; }
+  @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}
+  @keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.07)}}
+  .anim-exec{ animation:pulse 1.1s ease-in-out infinite; }
+  .anim-think{ animation:bob 1.8s ease-in-out infinite; }
+
+  /* chips */
+  .chip{ border-radius:9px; padding:5px 6px; font-size:11px; line-height:1.25; text-align:left; }
+  .cO{ background:#16130d; border:1px solid #5a3f1e; }
+  .cG{ background:#0c1612; border:1px solid #1e5a3f; }
+
+  /* session rows */
+  .rows{ position:absolute; left:46px; right:46px; will-change:transform; }
+  .row{ padding:4px 0; cursor:pointer; }
+  .row .l1{ font-size:12px; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .row .l2{ font-size:10px; color:var(--dim); padding-left:14px; }
+  .row:active{ opacity:.6; }
+  .fade-top,.fade-bot{ position:absolute; left:0; right:0; height:34px; pointer-events:none; z-index:2; }
+  .fade-top{ top:64px; background:linear-gradient(#000,rgba(0,0,0,0)); }
+  .fade-bot{ bottom:40px; background:linear-gradient(rgba(0,0,0,0),#000); }
+
+  .dots{ position:absolute; bottom:26px; left:0; right:0; text-align:center; font-size:13px; letter-spacing:3px; color:var(--faint); }
+  .voice{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; flex-direction:column;
+          background:rgba(0,0,0,.78); z-index:5; }
+  .voice.on{ display:flex; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Codey · Agent 会话监视器 — 圆屏交互模拟</h1>
+
+  <div class="device">
+    <div class="btn left" id="btnA"><span class="lbl">BtnA<br>短按=切页<br>长按=进/出详情</span></div>
+    <div class="bezel" id="bezel">
+      <div class="screen" id="screen"></div>
+      <div class="voice" id="voice">
+        <div style="font-size:13px;color:#cfd2d8">🎙 听取语音…</div>
+        <div style="font-size:11px;color:#8b9097;margin-top:6px">(松开 BtnB 结束)</div>
+      </div>
+    </div>
+    <div class="btn right" id="btnB"><span class="lbl">BtnB<br>语音</span></div>
+  </div>
+
+  <div class="hint">
+    <b>触控</b>:<b>单击屏幕</b>=进入详情(点某行进该会话 / 点空白进置顶) · <b>双击屏幕</b>=退出详情<br>
+    <b>横向滑动</b>=切换页面(详情里=切上/下一个会话) · <b>竖向拖动</b>=滚动会话列表<br>
+    <b>按钮(备选)</b>:<kbd>BtnA</kbd> 短按切页 / 长按进出详情 · <kbd>BtnB</kbd> 语音<br>
+    <span id="liveState" style="color:var(--faint)">数据:mock(符合 /codey/state 契约)</span>
+    <button id="liveBtn" style="margin-left:8px;background:#1c1e23;border:1px solid #34373e;color:#cfd2d8;border-radius:6px;padding:2px 8px;cursor:pointer;font-size:11px">尝试拉取本机 :8787</button>
+  </div>
+</div>
+
+<script>
+// ----------------------------------------------------------------- mock /codey/state
+const NOW = Math.floor(Date.now()/1000);
+function mk(id,name,status,model,ctx,ctxTok,tok,turn,task,branch,added,modified,subagents,ports){
+  return { id, name, status, model, context_pct:ctx, context_tokens:ctxTok, context_window:200000,
+    tokens_total:tok, turn, current_task:task, git:{branch,added,modified}, subagents, ports,
+    started_at:NOW-turn*40, effort:'' };
+}
+const MOCK = {
+  ts: NOW,
+  providers: [
+    { id:'claude', name:'Claude Code', session:{used_pct:38,reset_epoch:NOW+3*3600},
+      weekly:{used_pct:61,reset_epoch:NOW+4*86400}, model:'Opus 4.8',
+      active_count:3, agg:{dirty_repos:4, tokens_per_min:94000},
+      sessions:[
+        mk('c1','Codey','executing','Opus 4.8',47,94000,1240000,23,'Edit companion/server.js','main',3,12,2,[3000,5173]),
+        mk('c2','docs-site','thinking','Sonnet 4.6',31,58000,420000,9,'Read README.md','feat/api',0,3,0,[]),
+        mk('c3','my-very-long-project-name','executing','Opus 4.8',62,118000,2100000,41,'Bash npm test','dev',1,0,1,[4321]),
+        mk('c4','abtop','waiting','Opus 4.8',12,21000,160000,4,'','main',0,0,0,[]),
+        mk('c5','infra','waiting','Haiku','8',9000,60000,2,'','main',0,0,0,[]),
+        mk('c6','data-pipeline','thinking','Sonnet 4.6',55,104000,980000,18,'Grep TODO','wip',2,7,0,[8080]),
+      ] },
+    { id:'codex', name:'Codex', session:{used_pct:22,reset_epoch:NOW+2*3600},
+      weekly:{used_pct:18,reset_epoch:NOW+6*86400}, model:'GPT-5.1 Codex',
+      active_count:2, agg:{dirty_repos:1, tokens_per_min:51000},
+      sessions:[
+        mkx('x1','webapp','thinking','GPT-5.1 Codex',63,171000,720000,12,'shell pnpm build','dev',0,4),
+        mkx('x2','ml-serving','executing','GPT-5 Codex',40,108000,540000,7,'apply_patch model.py','main',2,9),
+        mkx('x3','api-gw','done','GPT-5.1 Codex',28,76000,310000,5,'','main',0,0),
+      ] },
+  ],
+};
+function mkx(id,name,status,model,ctx,ctxTok,tok,turn,task,branch,added,modified){
+  return { id,name,status,model,context_pct:ctx,context_tokens:ctxTok,context_window:272000,
+    tokens_total:tok,turn,current_task:task,git:{branch,added,modified},subagents:0,ports:[],started_at:NOW-turn*55,effort:'high' };
+}
+let STATE = MOCK;
+
+// ----------------------------------------------------------------- view model
+const PAGES = ['dashboard','claude','codex'];
+let page = 0;                 // index into PAGES
+let detail = null;            // { provider:'claude'|'codex', idx } or null
+const scroll = { claude:0, codex:0 };
+const ROW_H = 38, LIST_TOP = 78, LIST_BOT = 46;  // px within 380 screen
+
+const COL = { claude:'#ff9d3c', codex:'#3ccb7f' };
+const STATUS = {
+  executing:{ word:'▶ EXECUTING', ico:'▶', sw:'exec', tint:'#ffb86b', g:'#7fe6b0' },
+  thinking: { word:'◆ THINKING',  ico:'◆', sw:'think',tint:'#ffd479', g:'#7fe6b0' },
+  waiting:  { word:'⏸ WAITING',   ico:'⏸', sw:'wait', tint:'#8b9097', g:'#8b9097' },
+  done:     { word:'✓ DONE',      ico:'✓', sw:'done', tint:'#8b9097', g:'#8b9097' },
+};
+const el = (t,c,s)=>{ const e=document.createElement(t); if(c)e.className=c; if(s)e.setAttribute('style',s); return e; };
+const k = (n)=> n>=1000 ? (n/1000).toFixed(n>=100000?0:1)+'k' : ''+n;
+function fmtReset(ep){ let s=ep-Math.floor(Date.now()/1000); if(s<0)s=0; const h=Math.floor(s/3600),m=Math.floor(s%3600/60); return h?`${h}h${m}m`:`${m}m`; }
+
+// ----------------------------------------------------------------- mascots
+function mascotClaude(size, status){
+  const d=el('div','mC '+(status==='executing'?'anim-exec':status==='thinking'?'anim-think':''),
+    `width:${size}px;height:${size}px;box-shadow:0 0 ${size*0.3}px rgba(255,140,40,.5)`);
+  const ew=size*0.12, eh=size*0.17, ey=size*0.38, ex=size*0.28;
+  d.style.setProperty('--x','0');
+  d.innerHTML=`<i style="position:absolute;left:${ex}px;top:${ey}px;width:${ew}px;height:${eh}px;background:#2a1607;border-radius:40%"></i>
+               <i style="position:absolute;right:${ex}px;top:${ey}px;width:${ew}px;height:${eh}px;background:#2a1607;border-radius:40%"></i>`;
+  return d;
+}
+function mascotCodex(size, status){
+  const d=el('div','mG '+(status==='executing'?'anim-exec':status==='thinking'?'anim-think':''),
+    `width:${size}px;height:${size}px;box-shadow:0 0 ${size*0.3}px rgba(60,203,127,.5)`);
+  const r=size*0.13, ey=size*0.36, ex=size*0.26;
+  d.innerHTML=`<i style="position:absolute;left:${ex}px;top:${ey}px;width:${r}px;height:${r}px;background:#06281a;border-radius:50%"></i>
+               <i style="position:absolute;right:${ex}px;top:${ey}px;width:${r}px;height:${r}px;background:#06281a;border-radius:50%"></i>`;
+  return d;
+}
+
+// ----------------------------------------------------------------- renderers
+const screen = document.getElementById('screen');
+function clear(){ screen.innerHTML=''; }
+
+function arcStyle(color, pct, quadrants){
+  // quadrants: 'TL' claude (top+left), 'TR' codex (top+right)
+  const c = pct>0 ? color : '#2a2c31';
+  if(quadrants==='TL') return `border-top-color:${c};border-left-color:${c}`;
+  if(quadrants==='TR') return `border-top-color:${c};border-right-color:${c};clip-path:inset(0 0 50% 50%)`;
+  // full ring proportion (rough): color top+right when pct>0
+  return `border-top-color:${c};border-right-color:${pct>50?c:'#2a2c31'}`;
+}
+
+function renderDashboard(){
+  const cl=STATE.providers[0], cx=STATE.providers[1];
+  const arc1=el('div','arc',arcStyle(COL.claude, cl.weekly.used_pct,'TL')); screen.appendChild(arc1);
+  const arc2=el('div','arc',arcStyle(COL.codex, cx.weekly.used_pct,'TR')); screen.appendChild(arc2);
+
+  const hdr=el('div','scr',`top:30px;font-size:9px;letter-spacing:1px;color:#8a9097`);
+  hdr.textContent=`CLAUDE ${cl.weekly.used_pct}%   ·   CODEX ${cx.weekly.used_pct}% WK`; screen.appendChild(hdr);
+
+  const band=el('div',null,`position:absolute;top:58px;left:0;right:0;display:flex;align-items:center;justify-content:center;gap:14px`);
+  band.appendChild(mascotClaude(44,'executing'));
+  const ctr=el('div',null,'text-align:center');
+  ctr.innerHTML=`<div style="font-size:11px;letter-spacing:2px;color:#8a9097">ACTIVE</div>
+    <div style="font-size:24px;font-weight:700;color:#e6e8ec">${cl.active_count}<span style="color:#ff9d3c">·</span>${cx.active_count}</div>`;
+  band.appendChild(ctr); band.appendChild(mascotCodex(44,'thinking'));
+  screen.appendChild(band);
+
+  // chips: top N across both providers (active first), already sorted by server
+  const all=[...cl.sessions.map(s=>({s,p:'claude'})),...cx.sessions.map(s=>({s,p:'codex'}))]
+    .sort((a,b)=>rank(a.s)-rank(b.s)|| b.s.context_pct-a.s.context_pct);
+  const grid=el('div',null,`position:absolute;top:140px;left:60px;right:60px;display:grid;grid-template-columns:1fr 1fr;gap:7px`);
+  const N=5;
+  all.slice(0,N).forEach(({s,p})=>{
+    const st=STATUS[s.status];
+    const c=el('div','chip '+(p==='claude'?'cO':'cG'), `color:${p==='claude'?st.tint:st.g}`);
+    c.textContent=`${st.ico} ${trunc(s.name,7)} ${s.context_pct}%`;
+    grid.appendChild(c);
+  });
+  if(all.length>N){ const more=el('div','chip',`color:#6f757d;border:1px dashed #3a3c41;text-align:center`); more.textContent=`+${all.length-N} more`; grid.appendChild(more); }
+  screen.appendChild(grid);
+
+  const agg=el('div','scr',`top:246px;font-size:10px;color:#6f757d`);
+  agg.textContent=`⎇ ${cl.agg.dirty_repos+cx.agg.dirty_repos} dirty · ${k(cl.agg.tokens_per_min+cx.agg.tokens_per_min)}/min`;
+  screen.appendChild(agg);
+  pageDots();
+}
+const rank=(s)=> s.status==='executing'?0 : s.status==='thinking'?1 : 2;
+function trunc(s,n){ const a=Array.from(s); return a.length<=n?s:a.slice(0,n-1).join('')+'…'; }
+
+function renderList(provider){
+  const prov = provider==='claude'?STATE.providers[0]:STATE.providers[1];
+  const color = COL[provider];
+  const arc=el('div','arc',arcStyle(color, prov.weekly.used_pct,'TL')); screen.appendChild(arc);
+
+  const hd=el('div',null,`position:absolute;top:38px;left:0;right:0;display:flex;align-items:center;justify-content:center;gap:8px`);
+  hd.appendChild(provider==='claude'?mascotClaude(30,'thinking'):mascotCodex(30,'thinking'));
+  const t=el('span',null,`font-size:12px;letter-spacing:1px;color:#cfd2d8`);
+  t.textContent=`${provider==='claude'?'CLAUDE':'CODEX'} · ${prov.sessions.length}`; hd.appendChild(t);
+  screen.appendChild(hd);
+
+  const clip=el('div',null,`position:absolute;top:${LIST_TOP}px;bottom:${LIST_BOT}px;left:0;right:0;overflow:hidden`);
+  const rows=el('div','rows',`position:absolute;top:0;left:46px;right:46px;transform:translateY(${-scroll[provider]}px)`);
+  rows.id='rows-'+provider;
+  prov.sessions.forEach((s,i)=>{
+    const st=STATUS[s.status];
+    const row=el('div','row');
+    row.innerHTML=`<div class="l1">${st.ico} <b>${trunc(s.name,16)}</b> <span style="color:${provider==='claude'?st.tint:st.g}">${st.sw}</span></div>
+      <div class="l2">${s.model} · ${s.context_pct}% · ${k(s.tokens_total)} · t${s.turn}</div>`;
+    row.dataset.idx=i;
+    rows.appendChild(row);
+  });
+  clip.appendChild(rows); screen.appendChild(clip);
+  screen.appendChild(el('div','fade-top'));
+  screen.appendChild(el('div','fade-bot'));
+  pageDots();
+}
+
+function renderDetail(){
+  const prov = detail.provider==='claude'?STATE.providers[0]:STATE.providers[1];
+  const s = prov.sessions[detail.idx];
+  const color = COL[detail.provider];
+  const st = STATUS[s.status];
+  const arc=el('div','arc',`border-top-color:${color};border-right-color:${s.context_pct>50?color:'#2a2c31'}`); screen.appendChild(arc);
+
+  const h1=el('div','scr',`top:30px;font-size:13px;color:#cfd2d8`);
+  h1.innerHTML=`<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};vertical-align:middle"></span> ${detail.provider==='claude'?'Claude':'Codex'} · <b>${trunc(s.name,14)}</b>`;
+  screen.appendChild(h1);
+  const elapsed=Math.max(0,Math.floor(Date.now()/1000)-s.started_at);
+  const em=Math.floor(elapsed/60), eh=Math.floor(em/60);
+  const h2=el('div','scr',`top:48px;font-size:10px;color:#7d828a`);
+  h2.textContent=`${s.model} · ${eh?eh+'h'+(em%60)+'m':em+'m'} · turn ${s.turn}`; screen.appendChild(h2);
+
+  const mwrap=el('div',null,`position:absolute;top:64px;left:0;right:0;display:flex;justify-content:center`);
+  mwrap.appendChild(detail.provider==='claude'?mascotClaude(74,s.status):mascotCodex(74,s.status));
+  screen.appendChild(mwrap);
+  const sw=el('div','scr',`top:148px;font-size:13px;font-weight:700;color:${detail.provider==='claude'?st.tint:st.g}`);
+  sw.textContent=st.word; screen.appendChild(sw);
+
+  const info=el('div',null,`position:absolute;top:176px;left:54px;right:54px;display:flex;flex-direction:column;gap:7px;text-align:left;font-size:12px;color:#c3c7cd`);
+  const line=(html)=>{ const d=el('div',null,'white-space:nowrap;overflow:hidden;text-overflow:ellipsis'); d.innerHTML=html; return d; };
+  info.appendChild(line(s.current_task?`✎ <span style="color:#e6e8ec">${s.current_task}</span>`:`✎ <span style="color:#6f757d">idle</span>`));
+  info.appendChild(line(`⎇ ${s.git.branch} <span style="color:#7fe6b0">+${s.git.added}</span> <span style="color:#ffb86b">~${s.git.modified}</span>`));
+  info.appendChild(line(`▦ ctx <span style="color:#e6e8ec">${k(s.context_tokens)}</span>/${k(s.context_window)} · ${k(s.tokens_total)} tok`));
+  info.appendChild(line(`⬡ ${s.subagents} subagents${s.ports.length?' · :'+s.ports.join(' :'):''}`));
+  screen.appendChild(info);
+
+  // session position dots
+  const dots=el('div','dots',`bottom:22px`);
+  dots.textContent = prov.sessions.map((_,i)=> i===detail.idx?'●':'○').join(' ');
+  const lbl=el('div','scr',`bottom:6px;font-size:9px;color:#5a5d64`); lbl.textContent=`session ${detail.idx+1}/${prov.sessions.length}`;
+  screen.appendChild(dots); screen.appendChild(lbl);
+}
+
+function pageDots(){
+  const d=el('div','dots');
+  d.textContent = PAGES.map((_,i)=> i===page?'●':'○').join(' ');
+  // color the active dot by page
+  screen.appendChild(d);
+}
+
+function render(){
+  clear();
+  if(detail){ renderDetail(); return; }
+  const p=PAGES[page];
+  if(p==='dashboard') renderDashboard();
+  else if(p==='claude') renderList('claude');
+  else if(p==='codex') renderList('codex');
+}
+
+// ----------------------------------------------------------------- input: buttons
+const btnA=document.getElementById('btnA'), btnB=document.getElementById('btnB'), voice=document.getElementById('voice');
+let aDownAt=0, aLong=false, aTimer=null;
+function aShort(){
+  if(detail){ // next session in detail
+    const prov = detail.provider==='claude'?STATE.providers[0]:STATE.providers[1];
+    detail.idx = (detail.idx+1)%prov.sessions.length; render();
+  } else {
+    page=(page+1)%PAGES.length; render();
+  }
+}
+function aLongPress(){
+  const p=PAGES[page];
+  if(detail){ detail=null; render(); return; }               // 详情 → 返回列表
+  if(p==='claude'||p==='codex'){                              // 列表 → 进入置顶会话详情
+    const prov = p==='claude'?STATE.providers[0]:STATE.providers[1];
+    if(prov.sessions.length){ detail={ provider:p, idx:0 }; render(); }
+  }
+}
+btnA.addEventListener('pointerdown',e=>{ e.preventDefault(); aLong=false; aDownAt=Date.now();
+  aTimer=setTimeout(()=>{ aLong=true; aLongPress(); },550); });
+btnA.addEventListener('pointerup',e=>{ e.preventDefault(); clearTimeout(aTimer); if(!aLong) aShort(); });
+btnA.addEventListener('pointerleave',()=>{ clearTimeout(aTimer); });
+
+btnB.addEventListener('pointerdown',e=>{ e.preventDefault(); voice.classList.add('on'); });
+btnB.addEventListener('pointerup',e=>{ e.preventDefault(); voice.classList.remove('on'); });
+btnB.addEventListener('pointerleave',()=> voice.classList.remove('on'));
+
+// keyboard helpers: ArrowLeft=BtnA short, hold 'a' long via 'A'(shift) ; ArrowRight=BtnB
+window.addEventListener('keydown',e=>{
+  if(e.repeat) return;
+  if(e.key==='ArrowLeft') aShort();
+  else if(e.key==='a'||e.key==='A') aLongPress();
+  else if(e.key==='ArrowRight'){ voice.classList.add('on'); setTimeout(()=>voice.classList.remove('on'),700); }
+});
+
+// ----------------------------------------------------------------- input: touch gestures
+// 单击=进详情 · 双击=退出 · 横滑=切页(详情里切会话) · 竖拖=滚动列表
+const bezel=document.getElementById('bezel');
+const TAP_MOVE=8, SWIPE_MIN=42, DBL_MS=300;
+let g=null;                              // 当前手势 { startX,startY,startScroll,axis,row,onList }
+function curListProvider(){ const p=PAGES[page]; return (!detail && (p==='claude'||p==='codex'))?p:null; }
+function maxScroll(provider){
+  const prov = provider==='claude'?STATE.providers[0]:STATE.providers[1];
+  const viewH = 380 - LIST_TOP - LIST_BOT;
+  return Math.max(0, prov.sessions.length*ROW_H - viewH);
+}
+function globalTop(){                     // 仪表盘单击:全局最忙会话
+  const all=[...STATE.providers[0].sessions.map((s,i)=>({p:'claude',i,s})),
+             ...STATE.providers[1].sessions.map((s,i)=>({p:'codex',i,s}))]
+            .sort((a,b)=>rank(a.s)-rank(b.s)||b.s.context_pct-a.s.context_pct);
+  return all[0]||null;
+}
+function enterDetailFromTap(info){
+  if(detail) return;                      // 已在详情,单击忽略
+  const p=PAGES[page];
+  if(p==='claude'||p==='codex'){
+    const prov = p==='claude'?STATE.providers[0]:STATE.providers[1];
+    if(!prov.sessions.length) return;
+    const idx = info.row ? Number(info.row.dataset.idx) : 0;   // 点行=该会话,点空白=置顶
+    detail={ provider:p, idx };
+    render();
+  } else if(p==='dashboard'){
+    const t=globalTop(); if(t){ detail={ provider:t.p, idx:t.i }; render(); }
+  }
+}
+function exitDetailFromTap(){ if(detail){ detail=null; render(); } }
+function swipePage(dir){                   // 横滑:详情切会话,否则切页
+  if(detail){
+    const prov = detail.provider==='claude'?STATE.providers[0]:STATE.providers[1];
+    detail.idx = (detail.idx + dir + prov.sessions.length) % prov.sessions.length;
+  } else {
+    page = (page + dir + PAGES.length) % PAGES.length;
+  }
+  render();
+}
+
+// 单/双击分发(竖拖、横滑不触发)
+let lastTapAt=0, tapTimer=null;
+function dispatchTap(info){
+  const now=Date.now();
+  if(now-lastTapAt<DBL_MS){ clearTimeout(tapTimer); tapTimer=null; lastTapAt=0; exitDetailFromTap(); }
+  else { lastTapAt=now; tapTimer=setTimeout(()=>{ tapTimer=null; enterDetailFromTap(info); }, DBL_MS); }
+}
+
+bezel.addEventListener('pointerdown',e=>{
+  const prov=curListProvider();
+  g={ startX:e.clientX, startY:e.clientY, startScroll:prov?scroll[prov]:0, provider:prov,
+      axis:null, row:e.target.closest('.row') };
+  bezel.setPointerCapture(e.pointerId);
+});
+bezel.addEventListener('pointermove',e=>{
+  if(!g) return;
+  const dx=e.clientX-g.startX, dy=e.clientY-g.startY;
+  if(!g.axis && (Math.abs(dx)>TAP_MOVE || Math.abs(dy)>TAP_MOVE)) g.axis = Math.abs(dx)>Math.abs(dy)?'x':'y';
+  if(g.axis==='y' && g.provider){          // 竖拖滚动列表
+    let ns=Math.max(0,Math.min(maxScroll(g.provider), g.startScroll - dy));
+    scroll[g.provider]=ns;
+    const rows=document.getElementById('rows-'+g.provider);
+    if(rows) rows.style.transform=`translateY(${-ns}px)`;
+  }
+});
+bezel.addEventListener('pointerup',e=>{
+  if(!g) return;
+  const dx=e.clientX-g.startX, dy=e.clientY-g.startY;
+  if(g.axis==='x' && Math.abs(dx)>=SWIPE_MIN) swipePage(dx<0?1:-1);     // 横滑切页/会话
+  else if(g.axis!=='y' && Math.abs(dx)<TAP_MOVE && Math.abs(dy)<TAP_MOVE) dispatchTap({ row:g.row });  // 点击
+  g=null;
+});
+
+// ----------------------------------------------------------------- live fetch (best-effort)
+document.getElementById('liveBtn').addEventListener('click',async()=>{
+  const tag=document.getElementById('liveState');
+  tag.textContent='数据:拉取中…';
+  try{
+    const r=await fetch('http://127.0.0.1:8787/codey/state',{mode:'cors'});
+    const j=await r.json();
+    if(!j.providers) throw new Error('bad shape');
+    STATE=j; scroll.claude=0; scroll.codex=0; detail=null; render();
+    const cn=j.providers[0].sessions?.length??0, xn=j.providers[1].sessions?.length??0;
+    tag.textContent=`数据:LIVE :8787 ✓ (claude ${cn} / codex ${xn} 会话)`;
+    tag.style.color='#7fe6b0';
+  }catch(err){
+    tag.textContent='数据:本机 :8787 拉取失败('+err.message+'),仍用 mock';
+    tag.style.color='#ffb86b';
+  }
+});
+
+render();
+</script>
+</body>
+</html>
