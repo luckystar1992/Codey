@@ -1455,6 +1455,8 @@ git commit -m "feat(companion): agg.tokens_per_min 速率聚合"
 - **Claude effort**:暂置 `''`;spec §2.3 的 settings 优先级链(env/项目/全局 `effortLevel`)后续在 discover 里补。
 - **compaction 次数**:暂未输出(详情页 §4 必需行未含它),后续需要再加。
 - **Codex started_at**:用 rollout 文件 mtime 近似(可改为解析 `session_meta.timestamp`)。
+- **Codex Desktop 窗口**:spec §2.1 的 `originator:"Codex Desktop"` + 30 分钟窗口分支未实现,仅统一用 5 分钟 freshness;桌面版超 5 分钟的会话会被丢。plan 2 不要假设它已实现。
+- **status `done`**:Codex `task_complete` 且 5 分钟内的会话会上报 `status:"done"`(第 4 个枚举值,不计入 active_count,列表排序归为"其他")。固件需识别该值。
 
 ## 后续(计划 2,另写)
 固件 `codey_dash.ino`:仪表盘页 + Claude/Codex 会话列表页 + 单会话详情页 + `M5.Touch`(滑动滚动 / 点按进详情)。待计划 1 契约稳定后再写。

@@ -64,7 +64,7 @@
       "sessions": [
         {
           "id": "<sessionId>", "name": "Codey",
-          "status": "executing",        // executing|thinking|waiting
+          "status": "executing",        // executing|thinking|waiting|done(done=最近完成的 Codex 会话,5min 内;不计入 active_count)
           "model": "Opus 4.8",
           "context_pct": 47, "context_tokens": 94000, "context_window": 200000,
           "tokens_total": 1234567, "turn": 23,
