@@ -157,9 +157,11 @@ static const char* moodFor(int used, int pending, int battery) {
 // no native smooth arc). Convention-free — the angle is computed from the pixel itself
 // (design space: 0=top, clockwise), so the gap is always centered at the bottom. Background is
 // black here, so coverage blends by scaling the colour toward black.
-static void drawArc(M5Canvas& dst, uint32_t color, int pct) {
+
+// 通用 AA 弧:沿 [startDeg, startDeg+sweepDeg] 画轨道,按 pct 填充;reverse=true 时从末端起填。
+static void drawArcRange(M5Canvas& dst, uint32_t color, int pct,
+                         float startDeg, float sweepDeg, bool reverse) {
   const float rIn = 209.0f, rOut = 223.0f;
-  const float startDeg = -138.0f, sweepDeg = 276.0f;       // gap (84°) centered at the bottom
   const float p = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
   const float fillDeg = sweepDeg * p / 100.0f;
   const float loR = (rIn - 0.7f) * (rIn - 0.7f), hiR = (rOut + 0.7f) * (rOut + 0.7f);
@@ -169,24 +171,37 @@ static void drawArc(M5Canvas& dst, uint32_t color, int pct) {
     float fy = (float)dy, fyy = fy * fy;
     for (int dx = -Rb; dx <= Rb; dx++) {
       float r2 = (float)dx * dx + fyy;
-      if (r2 > hiR || r2 < loR) continue;                  // outside the band (+~1px) -> skip (cheap)
+      if (r2 > hiR || r2 < loR) continue;
       int px = CX + dx; if ((unsigned)px >= (unsigned)SIZE) continue;
       float rr = sqrtf(r2);
-      float cov = fminf(rr - (rIn - 0.5f), (rOut + 0.5f) - rr);   // radial sub-pixel coverage (AA edges)
+      float cov = fminf(rr - (rIn - 0.5f), (rOut + 0.5f) - rr);
       if (cov <= 0.0f) continue; if (cov > 1.0f) cov = 1.0f;
-      float d = atan2f((float)dx, -fy) * 57.2957795f;            // design angle (0=top, clockwise)
+      float d = atan2f((float)dx, -fy) * 57.2957795f;          // design angle (0=top, cw)
       float dn = d - startDeg; if (dn < 0) dn += 360.0f;
-      if (dn > sweepDeg) continue;                               // inside the bottom gap
-      uint32_t rgb = (dn <= fillDeg) ? color : 0x23262c;         // progress vs track
-      dst.drawPixel(px, py, c565(shade(rgb, -(1.0f - cov))));   // -> cached ring sprite (AA toward black)
+      if (dn > sweepDeg) continue;                             // outside this segment
+      float along = reverse ? (sweepDeg - dn) : dn;            // distance from the "fill origin"
+      uint32_t rgb = (along <= fillDeg) ? color : 0x23262c;
+      dst.drawPixel(px, py, c565(shade(rgb, -(1.0f - cov))));
     }
   }
-  if (pct > 0) {                                                 // glowing AA cap dot at the progress tip
-    float a = (startDeg + fillDeg - 90.0f) * DEG_TO_RAD;
+  if (pct > 0) {                                               // glowing cap at the progress tip
+    float tip = reverse ? (startDeg + sweepDeg - fillDeg) : (startDeg + fillDeg);
+    float a = (tip - 90.0f) * DEG_TO_RAD;
     int hx = CX + 216 * cosf(a), hy = CY + 216 * sinf(a);
     dst.fillSmoothCircle(hx, hy, 9, c565(COL_WHITE));
     dst.fillSmoothCircle(hx, hy, 6, c565(color));
   }
+}
+
+// 旧整段环(底部 84° 缺口居中):列表/详情页单弧沿用。
+static void drawArc(M5Canvas& dst, uint32_t color, int pct) {
+  drawArcRange(dst, color, pct, -138.0f, 276.0f, false);
+}
+
+// 仪表盘:左半=Claude(从顶往左下填),右半=Codex(从顶往右下填),底部缺口居中。
+static void drawDualArc(M5Canvas& dst, int claudePct, int codexPct) {
+  drawArcRange(dst, COL_CLAUDE, claudePct, -138.0f, 138.0f, true);   // left side, fill from top
+  drawArcRange(dst, COL_CODEX,  codexPct,    0.0f,  138.0f, false);  // right side, fill from top
 }
 
 // ---------- header (dot + name · clock · battery) ----------
