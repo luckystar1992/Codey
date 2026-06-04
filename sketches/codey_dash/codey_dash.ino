@@ -20,6 +20,8 @@
 #include <sys/time.h>       // settimeofday() — set the clock from the Companion's epoch
 #include "freertos/stream_buffer.h"  // 语音 PCM 跨核(主loop -> netTask)
 #include "wifi_store.h"     // 多 WiFi 记忆:历史网络(SSID/密码/连接次数)的 NVS 数据层
+#include "codey_ui.h"
+#include "session_store.h"
 
 // ---------- palette (RGB888) ----------
 static const uint32_t COL_CLAUDE = 0xF4894F;
@@ -27,16 +29,10 @@ static const uint32_t COL_CODEX  = 0x22D3A6;
 static const uint32_t COL_DANGER = 0xFF5D5D;
 static const uint32_t COL_WHITE  = 0xFFFFFF;
 
-// ---------- mock provider data ----------
-struct Provider {
-  const char* name;
-  uint32_t    color;
-  int         sessionUsed, weeklyUsed, pending;
-  long        sessionSeed, weeklySeed;   // countdown seeds (seconds)
-};
-static Provider PROV[2] = {
-  { "Claude", COL_CLAUDE, 10, 10, 3, 216L * 60, 24L * 3600 },
-  { "Codex",  COL_CODEX,  24, 18, 0,  41L * 60, 48L * 3600 },
+// ---------- provider data ----------
+static Prov PROV[2] = {
+  { "Claude", COL_CLAUDE, 0, 0, 0, 0, 0, 0, 0, {}, 0 },
+  { "Codex",  COL_CODEX,  0, 0, 0, 0, 0, 0, 0, {}, 0 },
 };
 static int g_batt = 76;             // refreshed from the real battery each second
 static int g_clkH = 0, g_clkM = 0;  // refreshed from the on-board RTC each second
@@ -96,8 +92,6 @@ static char           g_manualMac[24] = {0};      // 手填 Companion IP(NVS;门
 static const uint16_t ASR_PORT = 8788;
 static char     g_model[48] = {0};   // Claude 模型名(头像下),netTask 写 主loop 读
 static char     g_codexModel[48] = {0};  // Codex 最常用模型名(头像下)
-static char     g_lunar[40] = {0};
-static char     g_zodiac[16] = {0};
 static volatile int  g_netListenReq = 0;     // 1=start 2=stop (主loop -> netTask)
 static volatile bool g_netReconnect = false; // reconfigWiFi 后让 netTask 重连
 static volatile bool g_netPause = false;     // 门户运行时暂停 netTask 的 WiFi 操作(避免双核争用 WiFi 栈)
@@ -120,7 +114,6 @@ static String g_companionUrl = "http://192.168.1.29:8787/codey/state";   // rebu
 static volatile bool g_haveData = false;
 static volatile bool g_companionOk = false;   // usage 接口(Companion)是否可达 -> 尾灯 绿/红
 static bool     g_stale = false;
-static long     g_sReset[2] = {0, 0}, g_wReset[2] = {0, 0};   // real reset epochs (0 = use mock)
 static uint32_t g_lastFetch = 0;
 static int      g_fetchFails = 0;    // consecutive fetch failures -> re-resolve Mac (IP drift self-heal)
 
@@ -197,7 +190,7 @@ static void drawArc(M5Canvas& dst, uint32_t color, int pct) {
 }
 
 // ---------- header (dot + name · clock · battery) ----------
-static void drawHeader(const Provider& p, const String& clock) {
+static void drawHeader(const Prov& p, const String& clock) {
   uint16_t cc = c565(p.color);
   cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextSize(1);
   int nameW = cv.textWidth(p.name);
@@ -223,56 +216,6 @@ static void drawHeader(const Provider& p, const String& clock) {
   cv.drawString(String(g_batt).c_str(), bx + 28, ry);
 }
 
-// ---------- a USAGE/WEEKLY meter row ----------
-static void drawMeter(int y, const char* label, int used, const String& reset, uint32_t color) {
-  const int segs = 10;                 // 10 segments (per-segment size unchanged)
-  const int labelX = 56;               // lowercase label, moved left
-  const float pitch = 12.0f;           // per-segment pitch (drawn width stays 9px)
-  const int barX = 120;
-  const int pctRightX = 306;           // percentage right-aligned here
-  const int timeRightX = 378;          // remaining time at the far right, after the %
-  int filled = constrain((int)roundf(used / 100.0f * segs), 0, segs);
-  bool hot = used >= 85;
-  uint16_t segc = c565(hot ? COL_DANGER : color);
-  uint16_t empty = c565(0x1b1c20);
-
-  cv.setFont(&fonts::FreeSans9pt7b); cv.setTextSize(1);
-  cv.setTextColor(c565(0x9a9ca2)); cv.setTextDatum(middle_left);
-  cv.drawString(label, labelX, y);
-
-  for (int i = 0; i < segs; i++)
-    cv.fillRoundRect(barX + (int)(i * pitch), y - 5, (int)pitch - 3, 10, 2, i < filled ? segc : empty);
-
-  char pc[8]; snprintf(pc, sizeof(pc), "%d%%", used);
-  cv.setFont(&fonts::FreeMonoBold12pt7b);
-  cv.setTextColor(c565(COL_WHITE)); cv.setTextDatum(middle_right);
-  cv.drawString(pc, pctRightX, y);
-
-  cv.setFont(&fonts::FreeMono9pt7b);
-  cv.setTextColor(c565(0x6d6f75)); cv.setTextDatum(middle_right);
-  cv.drawString(reset.c_str(), timeRightX, y);
-}
-
-// ---------- "N TO REVIEW" pill ----------
-static void drawPill(int cy, int pending, uint32_t color) {
-  bool on = pending > 0;
-  uint16_t cc = c565(color);
-  char num[4]; snprintf(num, sizeof(num), "%d", pending);
-  cv.setFont(&fonts::FreeMonoBold9pt7b);  int nW = cv.textWidth(num);
-  cv.setFont(&fonts::FreeSans9pt7b);      int tW = cv.textWidth("TO REVIEW");
-  int contentW = 7 + 7 + nW + 8 + tW;
-  int w = contentW + 26, x = CX - w / 2, h = 30, y = cy - h / 2;
-  cv.fillRoundRect(x, y, w, h, 15, on ? c565(shade(color, -0.7)) : c565(0x0e0f12));
-  cv.drawRoundRect(x, y, w, h, 15, on ? cc : c565(0x2a2c31));
-  int ix = x + 13;
-  cv.fillCircle(ix + 3, cy, 3, on ? cc : c565(0x4d4f55));
-  cv.setFont(&fonts::FreeMonoBold9pt7b);
-  cv.setTextColor(on ? c565(COL_WHITE) : c565(0x8a8c92)); cv.setTextDatum(middle_left);
-  cv.drawString(num, ix + 11, cy);
-  cv.setFont(&fonts::FreeSans9pt7b);
-  cv.setTextColor(c565(0x808288)); cv.setTextDatum(middle_left);
-  cv.drawString("TO REVIEW", ix + 11 + nW + 8, cy);
-}
 
 // ---------- page dots ----------
 static void drawDots(int active, uint32_t color) {
@@ -563,156 +506,35 @@ static void drawVoiceOverlay() {
   }
 }
 
-// 270° dot gauge (opening at the bottom), lit up to pct, with an icon-less numeric center
-static void drawGaugeDots(int cx, int cy, int r, int pct, uint32_t color) {
-  const int n = 11;
-  for (int i = 0; i < n; i++) {
-    float th = (-135.0f + 270.0f * i / (n - 1)) * DEG_TO_RAD;
-    int x = cx + (int)(r * sinf(th)), y = cy - (int)(r * cosf(th));
-    bool lit = ((float)i / (n - 1)) <= pct / 100.0f + 0.001f;
-    cv.fillSmoothCircle(x, y, 2, lit ? c565(color) : c565(0x33363c));
-  }
-}
-// moon-phase disc: frac 0=new .. 0.5=full .. 1=new (lit half + terminator ellipse)
-static void drawMoon(int cx, int cy, int R, float frac) {
-  const uint16_t lit = c565(0xF1F0DA), dark = c565(0x1b1d23);
-  bool waxing = frac < 0.5f;
-  cv.fillSmoothCircle(cx, cy, R, dark);
-  cv.setClipRect(waxing ? cx : cx - R, cy - R, R + 1, 2 * R + 1);   // lit half (right if waxing)
-  cv.fillSmoothCircle(cx, cy, R, lit);
-  cv.clearClipRect();
-  float ct = cosf(2.0f * PI * frac); int ew = (int)(R * fabsf(ct));
-  if (ew >= 1) cv.fillEllipse(cx, cy, ew, R, ct >= 0 ? dark : lit);   // terminator
-  cv.drawCircle(cx, cy, R, c565(0x44474e));
-}
-static float moonFrac() {
-  struct timeval tv; gettimeofday(&tv, nullptr);
-  if (!timeSane(tv.tv_sec)) return 0.5f;
-  double jd = tv.tv_sec / 86400.0 + 2440587.5;                       // epoch -> Julian Day
-  double f = (jd - 2451550.1) / 29.530588853; f -= floor(f); if (f < 0) f += 1.0;   // since 2000 new moon
-  return (float)f;
-}
 
-// ---------- page 3: rich analog watch face (mechanical complications + Apple-Watch sweep) ----------
-static void drawWatchFace() {
-  const int cx = CX, cy = CY;
-  struct timeval tv; gettimeofday(&tv, nullptr);
-  struct tm ti; time_t e = tv.tv_sec; float sec;
-  if (timeSane(e)) { localtime_r(&e, &ti); sec = ti.tm_sec + tv.tv_usec / 1000000.0f; }
-  else { auto dt = M5.Rtc.getDateTime(); ti.tm_hour = dt.time.hours; ti.tm_min = dt.time.minutes; ti.tm_sec = dt.time.seconds;
-         ti.tm_mday = dt.date.date; ti.tm_mon = dt.date.month - 1; ti.tm_wday = dt.date.weekDay; sec = ti.tm_sec + (millis() % 1000) / 1000.0f; }
-  const float fmin = ti.tm_min + sec / 60.0f, fhour = (ti.tm_hour % 12) + fmin / 60.0f;
+// forward decls (实现见 Task 4-7)
+static void renderDashboard();
+static void renderListPage(int provIdx);
+static void renderDetailPage();
 
-  const uint16_t silver = c565(0xEDEDF2), faint = c565(0x53565d), edge = c565(0x26282d), dimtxt = c565(0x9598a0);
-  const uint32_t accent = COL_CLAUDE;
-  auto P = [&](float deg, float r, float& ox, float& oy) { float a = deg * DEG_TO_RAD; ox = cx + r * sinf(a); oy = cy - r * cosf(a); };
-
-  cv.drawCircle(cx, cy, 228, edge); cv.drawCircle(cx, cy, 227, edge);               // chapter ring
-  for (int i = 0; i < 60; i++) {                                                    // minute railroad
-    float ox, oy, ix, iy; bool major = (i % 5 == 0);
-    P(i * 6.0f, 223, ox, oy); P(i * 6.0f, major ? 209 : 217, ix, iy);
-    cv.drawWideLine((int)ix, (int)iy, (int)ox, (int)oy, major ? 2.0f : 0.7f, major ? silver : faint);
-  }
-  for (int h = 0; h < 12; h++) {                                                    // baton hour indices
-    float ox, oy, ix, iy; P(h * 30.0f, 203, ox, oy); P(h * 30.0f, 181, ix, iy);
-    cv.drawWideLine((int)ix, (int)iy, (int)ox, (int)oy, h == 0 ? 4.0f : 2.6f, silver);
-  }
-  { float ax, ay, bx, by, tx, ty; P(0, 175, tx, ty); P(-2.3f, 201, ax, ay); P(2.3f, 201, bx, by);
-    cv.fillTriangle((int)ax, (int)ay, (int)bx, (int)by, (int)tx, (int)ty, c565(accent)); }   // 12 marker
-
-  // top: weekday + Gregorian date, then 农历 + 生肖
-  static const char* WD[7] = {"周日", "周一", "周二", "周三", "周四", "周五", "周六"};
-  char l1[48]; snprintf(l1, sizeof(l1), "%s  %d月%d日", WD[ti.tm_wday & 7], ti.tm_mon + 1, ti.tm_mday);
-  cv.setFont(&fonts::efontCN_24); cv.setTextSize(1); cv.setTextDatum(middle_center);
-  cv.setTextColor(silver); cv.drawString(l1, cx, 96);
-  if (g_lunar[0]) {
-    String l2 = String(g_lunar) + (g_zodiac[0] ? ("  " + String(g_zodiac) + "年") : String(""));
-    cv.setTextColor(dimtxt); cv.drawString(l2.c_str(), cx, 126);
-  }
-
-  // subdials: battery (9 o'clock), volume (3 o'clock), moon phase (6 o'clock)
-  auto subNum = [&](int sx, int sy, int val, uint32_t col, const char* tag) {
-    drawGaugeDots(sx, sy, 30, val, col);
-    cv.setFont(&fonts::FreeSansBold9pt7b); cv.setTextDatum(middle_center); cv.setTextColor(silver);
-    char b[6]; snprintf(b, sizeof(b), "%d", val); cv.drawString(b, sx, sy - 3);
-    cv.setFont(&fonts::Font0); cv.setTextColor(dimtxt); cv.drawString(tag, sx, sy + 13);
-  };
-  subNum(cx - 112, cy, g_batt, 0x3CCB7F, "BAT");
-  subNum(cx + 112, cy, g_volume, 0x35B8FF, "VOL");
-  cv.drawCircle(cx, cy + 112, 34, edge); drawMoon(cx, cy + 112, 22, moonFrac());
-
-  // hands (AA, tapered)
-  float hx, hy, mx, my, sx, sy, tlx, tly;
-  P(fhour * 30.0f, 100, hx, hy); P(fhour * 30.0f + 180.0f, 22, tlx, tly);
-  cv.drawWedgeLine(cx, cy, (int)hx, (int)hy, 4.4f, 1.8f, c565(0xF2F2F6));
-  cv.drawWedgeLine(cx, cy, (int)tlx, (int)tly, 4.4f, 2.2f, c565(0xF2F2F6));
-  P(fmin * 6.0f, 150, mx, my); P(fmin * 6.0f + 180.0f, 26, tlx, tly);
-  cv.drawWedgeLine(cx, cy, (int)mx, (int)my, 3.6f, 1.2f, silver);
-  cv.drawWedgeLine(cx, cy, (int)tlx, (int)tly, 3.6f, 1.6f, silver);
-  P(sec * 6.0f, 170, sx, sy); P(sec * 6.0f + 180.0f, 46, tlx, tly);
-  cv.drawWideLine((int)tlx, (int)tly, (int)sx, (int)sy, 1.2f, c565(accent));
-  { float bxp, byp; P(sec * 6.0f + 180.0f, 32, bxp, byp); cv.fillSmoothCircle((int)bxp, (int)byp, 5, c565(accent)); }
-
-  cv.fillSmoothCircle(cx, cy, 7, silver);                                           // jeweled center cap
-  cv.fillSmoothCircle(cx, cy, 4, c565(0x141619));
-  cv.fillSmoothCircle(cx, cy, 2, c565(accent));
-}
+// detail 视图状态:active<0 表示不在详情;否则 detailProv(0/1) + detailIdx
+static int detailProv = -1, detailIdx = 0;
 
 // ---------- compose one page ----------
 static void render() {
-  if (g_voice) {
-    drawVoiceOverlay();
-    cv.pushSprite(0, 0);
-    return;
-  }
-  if (page == 2) {                          // pure analog watch face
-    cv.fillSprite(c565(0x000000));
-    drawWatchFace();
-    cv.pushSprite(0, 0);
-    return;
-  }
-  long elapsed = (millis() - bootMs) / 1000;
-  const Provider& p = PROV[page];
-  int arcPct = max(p.sessionUsed, p.weeklyUsed);
-  const char* mood = moodFor(arcPct, p.pending, g_batt);
+  if (g_voice) { drawVoiceOverlay(); cv.pushSprite(0, 0); return; }
 
-  char clk[8]; snprintf(clk, sizeof(clk), "%02d:%02d", g_clkH, g_clkM);
-  float t = (millis() - bootMs) / 1000.0f;
-
-  M5Canvas* rc = (page == 0) ? &g_ringA : &g_ringB;        // page0/1 各自的缓存环
-  bool rok = (page == 0) ? g_ringAok : g_ringBok;
-  int* rpct = (page == 0) ? &g_ringApct : &g_ringBpct;
-  uint32_t* rcol = (page == 0) ? &g_ringAcol : &g_ringBcol;
-  if (rok) {
-    if (arcPct != *rpct || p.color != *rcol) {            // 仅本页 pct/颜色变化时重算(非每帧、非切页)
-      rc->fillSprite(c565(0x000000));
-      drawArc(*rc, p.color, arcPct);
-      *rpct = arcPct; *rcol = p.color;
-    }
-    rc->pushSprite(&cv, 0, 0);                             // 切页只 copy -> 不卡
-  } else {
-    cv.fillSprite(c565(0x000000));
-  }
-  drawHeader(p, String(clk));
-  if (page == 0) drawClaude(CX, 150, p.color, mood, t);
-  else           drawCodex(CX, 150, p.color, mood, t);
-  const char* mdl = (page == 0) ? g_model : (page == 1) ? g_codexModel : "";   // 头像下的模型名
-  if (mdl[0]) {                               // Claude: "Opus 4.8" / Codex: "GPT-5.5"
-    cv.setFont(&fonts::FreeSans9pt7b); cv.setTextSize(1);
-    cv.setTextDatum(middle_center); cv.setTextColor(c565(0x8a8d94));
-    cv.drawString(mdl, CX, 226);
-  }
-  long nowE = time(nullptr);
-  bool epochOK = nowE > 1700000000L;   // NTP set -> real epoch
-  String sR = (g_haveData && epochOK && g_sReset[page] > 0) ? fmtDur(g_sReset[page] - nowE) : fmtDur(remain(p.sessionSeed, elapsed));
-  String wR = (g_haveData && epochOK && g_wReset[page] > 0) ? fmtDur(g_wReset[page] - nowE) : fmtDur(remain(p.weeklySeed,  elapsed));
-  drawMeter(250, "usage",  p.sessionUsed, sR, p.color);
-  drawMeter(286, "weekly", p.weeklyUsed,  wR, p.color);
-  drawPill(344, p.pending, p.color);
-  drawWifiStatus(406);
-  drawDots(page, p.color);
+  if (detailProv >= 0) { renderDetailPage(); cv.pushSprite(0, 0); return; }
+  if (page == 0)      renderDashboard();
+  else                renderListPage(page - 1);   // page1->claude(0), page2->codex(1)
   cv.pushSprite(0, 0);
 }
+
+// 占位实现(Task 4-7 替换)
+static void placeholder(const char* label) {
+  cv.fillSprite(c565(0x000000));
+  cv.setFont(&fonts::FreeSansBold18pt7b); cv.setTextDatum(middle_center);
+  cv.setTextColor(c565(0x8a9097));
+  cv.drawString(label, CX, CY);
+}
+static void renderDashboard()       { placeholder("DASHBOARD"); }
+static void renderListPage(int i)   { placeholder(PROV[i].name); }
+static void renderDetailPage()      { placeholder("DETAIL"); }
 
 // ---------- Arduino entry points ----------
 static void showSetupScreen(const char* l1, const char* l2, const char* l3) {
@@ -1027,26 +849,20 @@ static void fetchState() {
         const char* id = pr["id"] | "";
         int i = (strcmp(id, "claude") == 0) ? 0 : (strcmp(id, "codex") == 0 ? 1 : -1);
         if (i < 0) continue;
-        PROV[i].sessionUsed = pr["session"]["used_pct"] | PROV[i].sessionUsed;
-        PROV[i].weeklyUsed  = pr["weekly"]["used_pct"]  | PROV[i].weeklyUsed;
-        PROV[i].pending     = pr["pending_reviews"]     | PROV[i].pending;
-        g_sReset[i] = pr["session"]["reset_epoch"] | 0L;
-        g_wReset[i] = pr["weekly"]["reset_epoch"]  | 0L;
+        PROV[i].sessUsed  = pr["session"]["used_pct"] | 0;
+        PROV[i].weekUsed  = pr["weekly"]["used_pct"]  | 0;
+        PROV[i].sessReset = pr["session"]["reset_epoch"] | 0L;
+        PROV[i].weekReset = pr["weekly"]["reset_epoch"]  | 0L;
         if (i == 0 || i == 1) { const char* m = pr["model"] | ""; char* dst = (i == 0) ? g_model : g_codexModel; if (m[0]) { strncpy(dst, m, sizeof(g_model) - 1); dst[sizeof(g_model) - 1] = 0; } }
       }
       g_haveData = true; ok = true;
-      JsonObject lu = doc["lunar"];                  // 农历 / 生肖 for the watch face
-      if (!lu.isNull()) {
-        strncpy(g_lunar, (const char*)(lu["date"] | ""), sizeof(g_lunar) - 1); g_lunar[sizeof(g_lunar) - 1] = 0;
-        strncpy(g_zodiac, (const char*)(lu["zodiac"] | ""), sizeof(g_zodiac) - 1); g_zodiac[sizeof(g_zodiac) - 1] = 0;
-      }
       long ts = doc["ts"] | 0L;                      // Mac epoch -> set the device clock (NTP-independent)
       if (ts > 1700000000L && ts < 1900000000L) {
         struct timeval tv; tv.tv_sec = (time_t)ts; tv.tv_usec = 0; settimeofday(&tv, nullptr);
         readClock();
       }
       Serial.printf("[fetch] ok  claude %d/%d  codex %d/%d  stale=%d\n",
-                    PROV[0].sessionUsed, PROV[0].weeklyUsed, PROV[1].sessionUsed, PROV[1].weeklyUsed, g_stale);
+                    PROV[0].sessUsed, PROV[0].weekUsed, PROV[1].sessUsed, PROV[1].weekUsed, g_stale);
     } else {
       Serial.printf("[fetch] json err: %s\n", err.c_str());
     }
@@ -1057,8 +873,8 @@ static void fetchState() {
   if (ok) { g_fetchFails = 0; g_companionOk = true; }
   else if (++g_fetchFails >= 2) {                  // usage 接口不可达:自愈重连 + 把显示重置为 0
     g_fetchFails = 0; g_companionOk = false; g_haveData = false;
-    for (int i = 0; i < 2; i++) { PROV[i].sessionUsed = 0; PROV[i].weeklyUsed = 0; PROV[i].pending = 0; }
-    g_model[0] = g_codexModel[0] = g_lunar[0] = g_zodiac[0] = 0;
+    for (int i = 0; i < 2; i++) { PROV[i].sessUsed = 0; PROV[i].weekUsed = 0; PROV[i].nsess = 0; }
+    g_model[0] = g_codexModel[0] = 0;
     resolveMac(); wsConnect();                     // IP drift self-heal (netTask 上下文)
   }
 }
@@ -1186,7 +1002,7 @@ void loop() {
         g_voice = false; g_vphase = 0;                     // dismiss the result
       }
     } else if (!g_voice && M5.BtnA.wasPressed() && !M5.BtnB.isPressed()) {  // left -> switch page
-      page = (page + 1) % 3;                                        // Claude / Codex / watch face
+      page = (page + 1) % 3;                                        // dashboard / claude / codex
       Serial.printf("[btnA] page=%d\n", page);
     }
   }
