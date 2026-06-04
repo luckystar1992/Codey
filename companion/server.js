@@ -60,7 +60,9 @@ const { collectSessions, aggregateProvider, tokensPerMin } = require('./lib/coll
 
 // 会话采集缓存(异步定时刷新,避免每次请求阻塞)
 let sessionCache = { claude: [], codex: [] };
-let tokRate = { claude: { prev: null, val: 0 }, codex: { prev: null, val: 0 } };
+// 每端 token 速率追踪:{ prev: snapshot|null, val: tokens/分钟 }
+const makeRate = () => ({ prev: null, val: 0 });
+let tokRate = { claude: makeRate(), codex: makeRate() };
 let sessionRefreshing = false;
 async function refreshSessions() {
   if (sessionRefreshing) return;     // in-flight 锁:上一次没跑完就跳过,防止 tick 叠加
@@ -70,8 +72,7 @@ async function refreshSessions() {
     for (const id of ['claude', 'codex']) {
       const total = (sessionCache[id] || []).reduce((s, x) => s + (x.tokens_total || 0), 0);
       const cur = { tokens: total, at: Date.now() };
-      tokRate[id].val = tokensPerMin(tokRate[id].prev, cur);
-      tokRate[id].prev = cur;
+      tokRate = { ...tokRate, [id]: { prev: cur, val: tokensPerMin(tokRate[id].prev, cur) } };
     }
   }
   catch (e) { console.error('collectSessions failed:', e.message); }
