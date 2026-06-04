@@ -565,6 +565,17 @@ static void renderDetailPage();
 // detail 视图状态:active<0 表示不在详情;否则 detailProv(0/1) + detailIdx
 static int detailProv = -1, detailIdx = 0;
 
+// 列表页布局(466 屏内)
+static const int ROW_H = 47, LIST_TOP = 116, LIST_BOT = 56;
+static int g_scroll[2] = { 0, 0 };                       // claude/codex 各自的滚动像素偏移
+
+static int listViewH() { return SIZE - LIST_TOP - LIST_BOT; }
+static int maxScrollFor(int provIdx) {
+  int content = PROV[provIdx].nsess * ROW_H;
+  int m = content - listViewH();
+  return m > 0 ? m : 0;
+}
+
 // ---------- compose one page ----------
 static void render() {
   if (g_voice) { drawVoiceOverlay(); cv.pushSprite(0, 0); return; }
@@ -653,7 +664,74 @@ static void renderDashboard() {
   drawWifiStatus(406);
   drawDots(0, COL_WHITE);
 }
-static void renderListPage(int i)   { placeholder(PROV[i].name); }
+static void renderListPage(int provIdx) {
+  const Prov& p = PROV[provIdx];
+  uint32_t color = p.color;
+
+  // 单弧缓存在 g_ringB(列表/详情共用),pct 变化才重算
+  static int rbPct = -1; static uint32_t rbCol = 0;
+  if (g_ringBok) {
+    if (p.weekUsed != rbPct || color != rbCol) {
+      g_ringB.fillSprite(c565(0x000000));
+      drawArc(g_ringB, color, p.weekUsed);
+      rbPct = p.weekUsed; rbCol = color;
+    }
+    g_ringB.pushSprite(&cv, 0, 0);
+  } else cv.fillSprite(c565(0x000000));
+
+  // 头部:小吉祥物 + "CLAUDE · N"
+  drawMiniMascot(CX - 52, 60, 22, color, provIdx == 0, ST_THINKING);
+  char hd[24]; snprintf(hd, sizeof(hd), "%s · %d", provIdx == 0 ? "CLAUDE" : "CODEX", p.nsess);
+  cv.setFont(&fonts::FreeSans9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_left);
+  cv.setTextColor(c565(0xcfd2d8)); cv.drawString(hd, CX - 20, 60);
+
+  // 空态
+  if (p.nsess == 0) {
+    cv.setFont(&fonts::FreeSans9pt7b); cv.setTextColor(c565(0x6f757d)); cv.setTextDatum(middle_center);
+    cv.drawString("no sessions", CX, CY);
+    drawDots(provIdx + 1, color);
+    return;
+  }
+
+  // 裁剪窗 + 滚动绘制
+  int sc = g_scroll[provIdx];
+  if (sc > maxScrollFor(provIdx)) { sc = maxScrollFor(provIdx); g_scroll[provIdx] = sc; }
+  cv.setClipRect(40, LIST_TOP, SIZE - 80, listViewH());
+  for (int i = 0; i < p.nsess; i++) {
+    int y = LIST_TOP - sc + i * ROW_H;
+    if (y + ROW_H < LIST_TOP || y > SIZE - LIST_BOT) continue;     // 屏外跳过
+    const Sess& s = p.sess[i];
+    SessStatus st = (SessStatus)s.status;
+    const char* ico = st == ST_EXECUTING ? ">" : st == ST_THINKING ? "*" : st == ST_DONE ? "v" : "=";
+    uint16_t tint = c565(st == ST_EXECUTING ? shade(color, 0.25f) : st == ST_THINKING ? 0xffd479 : 0x8b9097);
+
+    char nm[40]; truncCp(s.name, 16, nm, sizeof(nm));
+    // 行1
+    cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextDatum(middle_left);
+    int x = 48;
+    cv.setTextColor(c565(0xe6e8ec));
+    char l1[48]; snprintf(l1, sizeof(l1), "%s %s", ico, nm);
+    cv.drawString(l1, x, y + 14);
+    int wl1 = cv.textWidth(l1);
+    cv.setFont(&fonts::FreeSans9pt7b); cv.setTextColor(tint);
+    cv.drawString(statusWord(st), x + wl1 + 10, y + 14);
+    // 行2
+    char md[24]; modelShort(s.model, md, sizeof(md));
+    char kt[16]; fmtK(s.tokTotal, kt, sizeof(kt));
+    char l2[64]; snprintf(l2, sizeof(l2), "%s · %d%% · %s · t%d", md, s.ctxPct, kt, s.turn);
+    cv.setFont(&fonts::FreeMono9pt7b); cv.setTextColor(c565(0x8a8d94));
+    cv.drawString(l2, x, y + 34);
+    // 分隔线
+    cv.drawFastHLine(48, y + ROW_H - 1, SIZE - 96, c565(0x1a1c20));
+  }
+  cv.clearClipRect();
+
+  // 顶/底渐隐(纯色淡出条,提示可滚动)
+  if (sc > 0)                       cv.fillRect(40, LIST_TOP, SIZE - 80, 8, c565(0x000000));
+  if (sc < maxScrollFor(provIdx))   cv.fillRect(40, SIZE - LIST_BOT - 8, SIZE - 80, 8, c565(0x000000));
+
+  drawDots(provIdx + 1, color);
+}
 static void renderDetailPage()      { placeholder("DETAIL"); }
 
 // ---------- Arduino entry points ----------
