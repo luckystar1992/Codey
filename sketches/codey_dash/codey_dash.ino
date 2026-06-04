@@ -426,6 +426,15 @@ static void drawMiniMascot(int cx, int cy, int R, uint32_t color, bool isClaude,
   }
 }
 
+static const char* moodForStatus(uint8_t status) {
+  switch (status) {
+    case ST_EXECUTING: return "alert";
+    case ST_THINKING:  return "focused";
+    case ST_DONE:      return "happy";
+    default:           return "sleepy";   // waiting
+  }
+}
+
 // 跨两端把会话引用收集进数组并按 (rank, -ctxPct) 排序;返回总数。
 static int collectSorted(SessRef* out, int cap) {
   int n = 0;
@@ -731,7 +740,72 @@ static void renderListPage(int provIdx) {
 
   drawDots(provIdx + 1, color);
 }
-static void renderDetailPage()      { placeholder("DETAIL"); }
+static void renderDetailPage() {
+  const Prov& p = PROV[detailProv];
+  if (detailIdx < 0 || detailIdx >= p.nsess) { cv.fillSprite(c565(0x000000)); return; }
+  const Sess& s = p.sess[detailIdx];
+  uint32_t color = p.color;
+  SessStatus st = (SessStatus)s.status;
+
+  // 弧 = ctx%(详情页每次重算到 cv,频率低可接受)
+  cv.fillSprite(c565(0x000000));
+  drawArc(cv, color, s.ctxPct);
+
+  // 头部:点 + provider · name
+  cv.fillCircle(CX - 70, 36, 4, c565(color));
+  char title[48]; char nm[40]; truncCp(s.name, 14, nm, sizeof(nm));
+  snprintf(title, sizeof(title), "%s · %s", detailProv == 0 ? "Claude" : "Codex", nm);
+  cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextSize(1); cv.setTextDatum(middle_left);
+  cv.setTextColor(c565(0xcfd2d8)); cv.drawString(title, CX - 58, 36);
+
+  // 第二行:model · 时长 · turn
+  long nowE = time(nullptr); bool epochOK = nowE > 1700000000L;
+  long elapsed = (epochOK && s.startedAt > 0) ? (nowE - s.startedAt) : 0;
+  char md[24]; modelShort(s.model, md, sizeof(md));
+  char el[16]; fmtElapsed(elapsed, el, sizeof(el));
+  char l2[64]; snprintf(l2, sizeof(l2), "%s · %s · turn %d", md, el, s.turn);
+  cv.setFont(&fonts::FreeMono9pt7b); cv.setTextDatum(middle_center);
+  cv.setTextColor(c565(0x7d828a)); cv.drawString(l2, CX, 64);
+
+  // 中央大吉祥物 + 状态词
+  float t = (millis() - bootMs) / 1000.0f;
+  const char* mood = moodForStatus(s.status);
+  if (detailProv == 0) drawClaude(CX, 150, color, mood, t);
+  else                 drawCodex(CX, 150, color, mood, t);
+  cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextDatum(middle_center);
+  uint16_t sw = c565(st == ST_EXECUTING ? shade(color, 0.25f) : st == ST_THINKING ? 0xffd479 : 0x8b9097);
+  cv.setTextColor(sw); cv.drawString(statusWord(st), CX, 224);
+
+  // 信息行(左对齐,逐行)
+  const int ix = 66, iw = SIZE - 132; int y = 256; const int dy = 26;
+  cv.setFont(&fonts::FreeMono9pt7b); cv.setTextDatum(middle_left);
+  cv.setClipRect(ix, y - 14, iw, dy * 4 + 8);
+  char buf[96];
+  // ① 当前任务
+  if (s.task[0]) { cv.setTextColor(c565(0xe6e8ec)); snprintf(buf, sizeof(buf), "* %s", s.task); }
+  else           { cv.setTextColor(c565(0x6f757d)); snprintf(buf, sizeof(buf), "* idle"); }
+  cv.drawString(buf, ix, y); y += dy;
+  // ② git
+  cv.setTextColor(c565(0xc3c7cd));
+  snprintf(buf, sizeof(buf), "git %s +%d ~%d", s.branch[0] ? s.branch : "-", s.added, s.modified);
+  cv.drawString(buf, ix, y); y += dy;
+  // ③ ctx / tokens
+  char kc[16], kw[16], kt[16];
+  fmtK(s.ctxTok, kc, sizeof(kc)); fmtK(s.ctxWin, kw, sizeof(kw)); fmtK(s.tokTotal, kt, sizeof(kt));
+  snprintf(buf, sizeof(buf), "ctx %s/%s · %s tok", kc, kw, kt);
+  cv.drawString(buf, ix, y); y += dy;
+  // ④ subagents · ports
+  int n = snprintf(buf, sizeof(buf), "%d subagents", s.subagents);
+  for (int i = 0; i < s.nports && n < (int)sizeof(buf) - 8; i++)
+    n += snprintf(buf + n, sizeof(buf) - n, "%s:%d", i == 0 ? " · " : " ", s.ports[i]);
+  cv.drawString(buf, ix, y);
+  cv.clearClipRect();
+
+  // 位置:session i/N
+  char pos[24]; snprintf(pos, sizeof(pos), "session %d/%d", detailIdx + 1, p.nsess);
+  cv.setFont(&fonts::FreeSans9pt7b); cv.setTextDatum(middle_center);
+  cv.setTextColor(c565(0x5a5d64)); cv.drawString(pos, CX, 438);
+}
 
 // ---------- Arduino entry points ----------
 static void showSetupScreen(const char* l1, const char* l2, const char* l3) {
