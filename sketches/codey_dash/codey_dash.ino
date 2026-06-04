@@ -29,6 +29,9 @@ static const uint32_t COL_CODEX  = 0x22D3A6;
 static const uint32_t COL_DANGER = 0xFF5D5D;
 static const uint32_t COL_WHITE  = 0xFFFFFF;
 
+// ---------- cross-provider session reference (used by dashboard sort) ----------
+struct SessRef { int prov; int idx; };
+
 // ---------- provider data ----------
 static Prov PROV[2] = {
   { "Claude", COL_CLAUDE, 0, 0, 0, 0, 0, 0, 0, {}, 0 },
@@ -407,6 +410,38 @@ static void drawCodex(int ccx, int ccy, uint32_t color, const char* mood, float 
   }
 }
 
+// 小号吉祥物:3D orb + 两只眼,用于仪表盘/列表(大号 drawClaude/drawCodex 留给详情页)
+static void drawMiniMascot(int cx, int cy, int R, uint32_t color, bool isClaude, uint8_t status) {
+  drawAvatarOrb(cx, cy, R, color);
+  float open = (status == ST_EXECUTING) ? 1.15f : (status == ST_THINKING) ? 0.85f : 0.55f;
+  if (aBlink) open = 0.12f;
+  int ex = (int)(R * 0.34f), ey = cy - (int)(R * 0.05f);
+  int ew = (int)(R * 0.20f), eh = (int)(R * 0.30f * open) + 2;
+  uint16_t ec = isClaude ? c565(0x140a04) : c565(0x8AD8C7);
+  if (isClaude) {
+    cv.fillRoundRect(cx - ex - ew / 2, ey - eh / 2, ew, eh, 2, ec);
+    cv.fillRoundRect(cx + ex - ew / 2, ey - eh / 2, ew, eh, 2, ec);
+  } else {
+    cv.fillSmoothCircle(cx - ex, ey, max(2, eh / 2), ec);
+    cv.fillSmoothCircle(cx + ex, ey, max(2, eh / 2), ec);
+  }
+}
+
+// 跨两端把会话引用收集进数组并按 (rank, -ctxPct) 排序;返回总数。
+static int collectSorted(SessRef* out, int cap) {
+  int n = 0;
+  for (int pr = 0; pr < 2; pr++)
+    for (int i = 0; i < PROV[pr].nsess && n < cap; i++) out[n++] = { pr, i };
+  for (int a = 0; a < n; a++)                              // 简单插入排序(n<=24)
+    for (int b = a + 1; b < n; b++) {
+      const Sess& A = PROV[out[a].prov].sess[out[a].idx];
+      const Sess& B = PROV[out[b].prov].sess[out[b].idx];
+      int ra = statusRank((SessStatus)A.status), rb = statusRank((SessStatus)B.status);
+      if (rb < ra || (rb == ra && B.ctxPct > A.ctxPct)) { SessRef t = out[a]; out[a] = out[b]; out[b] = t; }
+    }
+  return n;
+}
+
 // ---- WebSocket streaming-ASR client ----
 static void wsListen(bool start) {            // listen-control messages (xiaozhi-style)
   if (!g_wsConn) return;
@@ -547,7 +582,79 @@ static void placeholder(const char* label) {
   cv.setTextColor(c565(0x8a9097));
   cv.drawString(label, CX, CY);
 }
-static void renderDashboard()       { placeholder("DASHBOARD"); }
+static void renderDashboard() {
+  // 双弧缓存在 g_ringA(仪表盘专用),仅在 pct 变化时重算
+  static int rcA = -1, rcX = -1;
+  if (!g_ringAok) { cv.fillSprite(c565(0x000000)); }
+  else {
+    if (PROV[0].weekUsed != rcA || PROV[1].weekUsed != rcX) {
+      g_ringA.fillSprite(c565(0x000000));
+      drawDualArc(g_ringA, PROV[0].weekUsed, PROV[1].weekUsed);
+      rcA = PROV[0].weekUsed; rcX = PROV[1].weekUsed;
+    }
+    g_ringA.pushSprite(&cv, 0, 0);
+  }
+
+  // 顶部标题
+  char hdr[40];
+  snprintf(hdr, sizeof(hdr), "CLAUDE %d%%  ·  CODEX %d%% WK", PROV[0].weekUsed, PROV[1].weekUsed);
+  cv.setFont(&fonts::FreeSans9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_center);
+  cv.setTextColor(c565(0x8a9097)); cv.drawString(hdr, CX, 52);
+
+  // 双吉祥物 + 中央活跃计数 a·b
+  long t = millis();
+  drawMiniMascot(CX - 96, 104, 30, COL_CLAUDE, true,  ST_EXECUTING);
+  drawMiniMascot(CX + 96, 104, 30, COL_CODEX,  false, ST_THINKING);
+  cv.setFont(&fonts::FreeSans9pt7b); cv.setTextColor(c565(0x8a9097)); cv.setTextDatum(middle_center);
+  cv.drawString("ACTIVE", CX, 86);
+  char ac[16]; snprintf(ac, sizeof(ac), "%d", PROV[0].activeCount);
+  char xc[16]; snprintf(xc, sizeof(xc), "%d", PROV[1].activeCount);
+  cv.setFont(&fonts::FreeSansBold18pt7b);
+  int wA = cv.textWidth(ac), wDot = cv.textWidth(" · "), wX = cv.textWidth(xc);
+  int x0 = CX - (wA + wDot + wX) / 2;
+  cv.setTextDatum(middle_left); cv.setTextColor(c565(0xe6e8ec)); cv.drawString(ac, x0, 116);
+  cv.setTextColor(c565(COL_CLAUDE)); cv.drawString(" · ", x0 + wA, 116);
+  cv.setTextColor(c565(0xe6e8ec)); cv.drawString(xc, x0 + wA + wDot, 116);
+
+  // 跨端 top5 色块(2 列网格)
+  SessRef refs[MAX_SESS * 2]; int total = collectSorted(refs, MAX_SESS * 2);
+  const int N = 5, colW = 168, rowH = 34, gap = 8;
+  const int gx = CX - colW - gap / 2, gy = 168;
+  cv.setFont(&fonts::FreeSans9pt7b); cv.setTextDatum(middle_left);
+  for (int i = 0; i < total && i < N; i++) {
+    const Sess& s = PROV[refs[i].prov].sess[refs[i].idx];
+    bool isC = refs[i].prov == 0;
+    int cx = gx + (i % 2) * (colW + gap), cy = gy + (i / 2) * (rowH + gap);
+    cv.fillRoundRect(cx, cy, colW, rowH, 8, c565(shade(isC ? COL_CLAUDE : COL_CODEX, -0.78f)));
+    cv.drawRoundRect(cx, cy, colW, rowH, 8, c565(shade(isC ? COL_CLAUDE : COL_CODEX, -0.40f)));
+    char nm[32]; truncCp(s.name, 7, nm, sizeof(nm));
+    const char* ico = s.status == ST_EXECUTING ? ">" : s.status == ST_THINKING ? "*" : s.status == ST_DONE ? "v" : "=";
+    char line[48]; snprintf(line, sizeof(line), "%s %s %d%%", ico, nm, s.ctxPct);
+    cv.setTextColor(c565(isC ? COL_CLAUDE : COL_CODEX));
+    cv.drawString(line, cx + 10, cy + rowH / 2);
+  }
+  if (total > N) {
+    int cx = gx + (N % 2) * (colW + gap), cy = gy + (N / 2) * (rowH + gap);
+    char more[24]; snprintf(more, sizeof(more), "+%d more", total - N);
+    cv.setTextColor(c565(0x6f757d)); cv.setTextDatum(middle_center);
+    cv.drawString(more, cx + colW / 2, cy + rowH / 2);
+  }
+  if (total == 0) {
+    cv.setFont(&fonts::FreeSans9pt7b); cv.setTextColor(c565(0x6f757d)); cv.setTextDatum(middle_center);
+    cv.drawString("no active sessions", CX, 200);
+  }
+
+  // 底部聚合
+  char agg[48]; char km[16];
+  fmtK(PROV[0].tokPerMin + PROV[1].tokPerMin, km, sizeof(km));
+  snprintf(agg, sizeof(agg), "%c %d dirty · %s/min", '~', PROV[0].dirtyRepos + PROV[1].dirtyRepos, km);
+  cv.setFont(&fonts::FreeMono9pt7b); cv.setTextColor(c565(0x6f757d)); cv.setTextDatum(middle_center);
+  cv.drawString(agg, CX, 330);
+
+  drawWifiStatus(406);
+  drawDots(0, COL_WHITE);
+  (void)t;
+}
 static void renderListPage(int i)   { placeholder(PROV[i].name); }
 static void renderDetailPage()      { placeholder("DETAIL"); }
 
