@@ -50,6 +50,12 @@ const PROMPT = '简体中文普通话。Claude Code,Codex,额度,周额度,还�
 const env = { ...process.env, https_proxy: PROXY, http_proxy: PROXY, all_proxy: PROXY };
 const clampPct = (x) => Math.max(0, Math.min(100, Math.round(x)));
 
+// 会话排序:executing < thinking < 其他,同档按 context_pct 降序
+const sortSessions = (arr) => [...arr].sort((a, b) => {
+  const rank = (s) => (s.status === 'executing' ? 0 : s.status === 'thinking' ? 1 : 2);
+  return rank(a) - rank(b) || b.context_pct - a.context_pct;
+});
+
 const { collectSessions, aggregateProvider } = require('./lib/collectSessions');
 
 // 会话采集缓存(异步定时刷新,避免每次请求阻塞)
@@ -60,7 +66,7 @@ async function refreshSessions() {
   sessionRefreshing = true;
   try { sessionCache = await collectSessions(); }
   catch (e) { console.error('collectSessions failed:', e.message); }
-  sessionRefreshing = false;
+  finally { sessionRefreshing = false; }
 }
 refreshSessions();
 setInterval(refreshSessions, 2000);                 // 快 tick ~2s
@@ -238,10 +244,6 @@ function buildState() {
   const fiveH = real && real.five_hour && typeof real.five_hour.used_percentage === 'number';
   const sevenD = real && real.seven_day && typeof real.seven_day.used_percentage === 'number';
 
-  const sortSessions = (arr) => [...arr].sort((a, b) => {
-    const rank = (s) => (s.status === 'executing' ? 0 : s.status === 'thinking' ? 1 : 2);
-    return rank(a) - rank(b) || b.context_pct - a.context_pct;
-  });
   const claudeSessions = sortSessions(sessionCache.claude);
   const codexSessions = sortSessions(sessionCache.codex);
   const claudeAgg = aggregateProvider(claudeSessions);
