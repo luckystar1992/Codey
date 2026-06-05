@@ -144,7 +144,7 @@ static void updateAnim(uint32_t now) {
 // 通用 AA 弧:沿 [startDeg, startDeg+sweepDeg] 画轨道,按 pct 填充;reverse=true 时从末端起填。
 static void drawArcRange(M5Canvas& dst, uint32_t color, int pct,
                          float startDeg, float sweepDeg, bool reverse) {
-  const float rIn = 209.0f, rOut = 223.0f;
+  const float rIn = 218.0f, rOut = 232.0f;   // 紧贴屏幕最外一圈(半径 233)
   const float p = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
   const float fillDeg = sweepDeg * p / 100.0f;
   const float loR = (rIn - 0.7f) * (rIn - 0.7f), hiR = (rOut + 0.7f) * (rOut + 0.7f);
@@ -170,7 +170,7 @@ static void drawArcRange(M5Canvas& dst, uint32_t color, int pct,
   if (pct > 0) {                                               // glowing cap at the progress tip
     float tip = reverse ? (startDeg + sweepDeg - fillDeg) : (startDeg + fillDeg);
     float a = (tip - 90.0f) * DEG_TO_RAD;
-    int hx = CX + 216 * cosf(a), hy = CY + 216 * sinf(a);
+    int hx = CX + 224 * cosf(a), hy = CY + 224 * sinf(a);
     dst.fillSmoothCircle(hx, hy, 9, c565(COL_WHITE));
     dst.fillSmoothCircle(hx, hy, 6, c565(color));
   }
