@@ -618,8 +618,10 @@ static int detailProv = -1, detailIdx = 0;
 static bool g_listView = false;   // true: 当前 provider 的会话列表(从主页滑入)
 
 // 列表页布局(466 屏内)
-static const int ROW_H = 40, LIST_TOP = 96, LIST_BOT = 86;   // 表格:单行/会话 + 顶部表头
-static int g_scroll[2] = { 0, 0 };                       // claude/codex 各自的滚动像素偏移
+static const int ROW_H = 40, LIST_MAX_VIS = 6;   // 表格行高;同屏最多行(超出则上下循环滚动)
+// 列表渲染几何(渲染时写,rowHitAt 命中检测读 —— 两者一致)
+static int  g_listBandTop = 0, g_listBandH = 0, g_listOff = 0, g_listVisN = 0;
+static bool g_listAuto = false;
 
 // 触摸手势 → 抽象动作(action);导航只消费 action,改交互只动 handleAction()
 // 注:enum 已上移到文件顶部(Arduino 自动生成的函数原型会被提到 include 之后,需先见到此类型)
@@ -628,19 +630,12 @@ static bool     g_tDown = false;
 static int      g_tx0 = 0, g_ty0 = 0, g_tLastX = 0, g_tLastY = 0;
 static char     g_tAxis = 0;                 // 0 未定 / 'x' / 'y'
 static int      g_tProv = -1;                // 竖拖滚动作用的列表 provIdx(-1=非列表)
-static int      g_tStartScroll = 0;
 static uint32_t g_lastTapMs = 0;             // 双击窗(尽力,硬件多半接不住)
 static int      g_tapRow = -1;               // 最近 TAP 命中行(供 handleAction)
 static uint32_t g_touchLostMs = 0;           // 失触起点;去抖确认抬起(防 getCount 单帧抖动)
 static bool     g_gestureFired = false;      // 本次手势是否已触发滑动(阈值即发,防重复/防误判点击)
 static bool     g_forceRender = false;       // 动作发生时强制立即重绘(切页跟手)
 
-static int listViewH() { return SIZE - LIST_TOP - LIST_BOT; }
-static int maxScrollFor(int provIdx) {
-  int content = PROV[provIdx].nsess * ROW_H;
-  int m = content - listViewH();
-  return m > 0 ? m : 0;
-}
 
 // ---------- compose one page ----------
 static void render() {
@@ -698,52 +693,61 @@ static void renderListPage(int provIdx) {
   // 表格列(左对齐,贴合圆屏可用宽);全 ASCII → FreeMono 无方框
   const int colDot = 46, colSt = 58, colModel = 112, colCtx = 204, colTok = 242, colMem = 300, colTurn = 358;
 
-  // 表头(固定,不滚动)
+  // 居中几何:整张表(表头 + 可见行)以屏幕中线 CY 为对称轴居中
+  const int HEAD_H = 26;
+  int visN = p.nsess < LIST_MAX_VIS ? p.nsess : LIST_MAX_VIS;
+  int bandH = visN * ROW_H;
+  int blockTop = CY - (HEAD_H + bandH) / 2;
+  int headY = blockTop + 11;
+  int bandTop = blockTop + HEAD_H;
+  bool autoScroll = p.nsess > LIST_MAX_VIS;
+  int contentH = p.nsess * ROW_H;
+  int off = autoScroll ? (int)((millis() / 40) % (uint32_t)contentH) : 0;   // ~25px/s 上下循环滚动
+  g_listBandTop = bandTop; g_listBandH = bandH; g_listOff = off;            // 供 rowHitAt 命中检测
+  g_listVisN = visN; g_listAuto = autoScroll;
+
+  // 表头(居中块顶部)
   cv.setFont(&fonts::FreeMono9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_left);
   cv.setTextColor(c565(0x6d6f75));
-  cv.drawString("St",    colSt,    78);
-  cv.drawString("Model", colModel, 78);
-  cv.drawString("Ctx",   colCtx,   78);
-  cv.drawString("Tok",   colTok,   78);
-  cv.drawString("Mem",   colMem,   78);
-  cv.drawString("Turn",  colTurn,  78);
-  cv.drawFastHLine(46, 90, SIZE - 92, c565(0x2a2c31));
+  cv.drawString("St",    colSt,    headY);
+  cv.drawString("Model", colModel, headY);
+  cv.drawString("Ctx",   colCtx,   headY);
+  cv.drawString("Tok",   colTok,   headY);
+  cv.drawString("Mem",   colMem,   headY);
+  cv.drawString("Turn",  colTurn,  headY);
+  cv.drawFastHLine(46, bandTop - 3, SIZE - 92, c565(0x2a2c31));
 
-  // 滚动行(裁剪)
-  int sc = g_scroll[provIdx];
-  if (sc > maxScrollFor(provIdx)) { sc = maxScrollFor(provIdx); g_scroll[provIdx] = sc; }
-  const int viewH = listViewH();
-  cv.setClipRect(40, LIST_TOP, SIZE - 80, viewH);
-  for (int i = 0; i < p.nsess; i++) {
-    int y = LIST_TOP - sc + i * ROW_H;
-    if (y + ROW_H < LIST_TOP || y > LIST_TOP + viewH) continue;
-    const Sess& s = p.sess[i];
-    SessStatus st = (SessStatus)s.status;
-    uint16_t dc = c565(statusDotColor(st));
-    int my = y + ROW_H / 2;
-    if (st == ST_EXECUTING)                                   // 活跃行高亮带
-      cv.fillRoundRect(48, y + 3, SIZE - 96, ROW_H - 5, 6, c565(shade(color, -0.82f)));
-    if (st == ST_EXECUTING) cv.fillSmoothCircle(colDot, my, 5, dc);   // 实心=运行
-    else { cv.drawCircle(colDot, my, 5, dc); cv.drawCircle(colDot, my, 4, dc); }   // 空心环=其余
-    cv.setFont(&fonts::FreeMono9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_left);
-    cv.setTextColor(dc);              cv.drawString(statusShort(st), colSt, my);
-    char md[16]; modelShort(s.model, md, sizeof(md));       // 紧凑:去空格(Opus 4.8 -> Opus4.8)
-    for (char* a = md, *b = md; ; ++a) { if (*a != ' ') *b++ = *a; if (!*a) break; }
-    cv.setTextColor(c565(0x8a8d94));  cv.drawString(md, colModel, my);
-    char cb[8]; snprintf(cb, sizeof(cb), "%d%%", s.ctxPct);
-    cv.setTextColor(c565(ctxColor(s.ctxPct))); cv.drawString(cb, colCtx, my);
-    char tb[12]; fmtTokens(s.tokTotal, tb, sizeof(tb));
-    cv.setTextColor(c565(0xe6e8ec));  cv.drawString(tb, colTok, my);
-    char mb[10]; fmtMem(s.memKb, mb, sizeof(mb));
-    cv.setTextColor(c565(0x8a8d94));  cv.drawString(mb, colMem, my);
-    char rb[8]; snprintf(rb, sizeof(rb), "%d", s.turn);
-    cv.setTextColor(c565(0x8a8d94));  cv.drawString(rb, colTurn, my);
+  // 行(居中静态;>LIST_MAX_VIS 时上下循环滚动,双份无缝拼接;裁剪到行带)
+  cv.setClipRect(40, bandTop, SIZE - 80, bandH);
+  for (int pass = 0; pass < (autoScroll ? 2 : 1); pass++) {
+    int base = bandTop - off + pass * contentH;
+    for (int i = 0; i < p.nsess; i++) {
+      int y = base + i * ROW_H;
+      if (y + ROW_H < bandTop || y > bandTop + bandH) continue;
+      const Sess& s = p.sess[i];
+      SessStatus st = (SessStatus)s.status;
+      uint16_t dc = c565(statusDotColor(st));
+      int my = y + ROW_H / 2;
+      if (st == ST_EXECUTING)
+        cv.fillRoundRect(46, y + 3, SIZE - 92, ROW_H - 5, 6, c565(shade(color, -0.82f)));
+      if (st == ST_EXECUTING) cv.fillSmoothCircle(colDot, my, 5, dc);   // 实心=运行
+      else { cv.drawCircle(colDot, my, 5, dc); cv.drawCircle(colDot, my, 4, dc); }   // 空心环=其余
+      cv.setFont(&fonts::FreeMono9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_left);
+      cv.setTextColor(dc);              cv.drawString(statusShort(st), colSt, my);
+      char md[16]; modelShort(s.model, md, sizeof(md));      // 紧凑:去空格(Opus 4.8 -> Opus4.8)
+      for (char* a = md, *b = md; ; ++a) { if (*a != ' ') *b++ = *a; if (!*a) break; }
+      cv.setTextColor(c565(0x8a8d94));  cv.drawString(md, colModel, my);
+      char cb[8]; snprintf(cb, sizeof(cb), "%d%%", s.ctxPct);
+      cv.setTextColor(c565(ctxColor(s.ctxPct))); cv.drawString(cb, colCtx, my);
+      char tb[12]; fmtTokens(s.tokTotal, tb, sizeof(tb));
+      cv.setTextColor(c565(0xe6e8ec));  cv.drawString(tb, colTok, my);
+      char mb[10]; fmtMem(s.memKb, mb, sizeof(mb));
+      cv.setTextColor(c565(0x8a8d94));  cv.drawString(mb, colMem, my);
+      char rb[8]; snprintf(rb, sizeof(rb), "%d", s.turn);
+      cv.setTextColor(c565(0x8a8d94));  cv.drawString(rb, colTurn, my);
+    }
   }
   cv.clearClipRect();
-
-  // 顶/底渐隐(提示可滚动)
-  if (sc > 0)                     cv.fillRect(40, LIST_TOP, SIZE - 80, 6, c565(0x000000));
-  if (sc < maxScrollFor(provIdx)) cv.fillRect(40, LIST_TOP + viewH - 6, SIZE - 80, 6, c565(0x000000));
 
   drawDots(provIdx, color);
 }
@@ -1308,11 +1312,15 @@ static void settingsButtons() {
 // ---- 触摸手势辅助函数 ----
 static int curListProv() { return (detailProv < 0 && g_listView) ? page : -1; }
 
-// 列表页:由屏幕 y 命中会话行号;-1 = 空白
+// 列表页:由屏幕 y 命中会话行号(用渲染时记下的几何,自动/居中两种布局一致);-1 = 空白
 static int rowHitAt(int provIdx, int ty) {
-  if (ty < LIST_TOP || ty > SIZE - LIST_BOT) return -1;
-  int idx = (g_scroll[provIdx] + (ty - LIST_TOP)) / ROW_H;
-  return (idx >= 0 && idx < PROV[provIdx].nsess) ? idx : -1;
+  int n = PROV[provIdx].nsess;
+  if (n <= 0 || g_listBandH <= 0) return -1;
+  if (ty < g_listBandTop || ty > g_listBandTop + g_listBandH) return -1;
+  int rel = ty - g_listBandTop;
+  if (g_listAuto) return ((g_listOff + rel) / ROW_H) % n;     // 滚动中:按当前偏移定位
+  int idx = rel / ROW_H;
+  return (idx >= 0 && idx < n) ? idx : -1;
 }
 
 static void enterDetail(int prov, int idx) { detailProv = prov; detailIdx = idx; }
@@ -1327,18 +1335,11 @@ static TouchAction detectTouchAction(uint32_t now) {
     g_tLastX = td.x; g_tLastY = td.y; g_touchLostMs = 0;   // 有触摸:清失触计时(吃掉单帧抖动)
     if (!g_tDown) {                                 // 按下沿(用 g_tDown,抖动恢复不会重置基准)
       g_tDown = true; g_tx0 = td.x; g_ty0 = td.y; g_tAxis = 0; g_gestureFired = false;
-      g_tProv = curListProv(); g_tStartScroll = (g_tProv >= 0) ? g_scroll[g_tProv] : 0;
+      g_tProv = curListProv();
     } else {                                        // 移动中
       int dx = g_tLastX - g_tx0, dy = g_tLastY - g_ty0;
       if (!g_tAxis && (abs(dx) > TAP_MOVE || abs(dy) > TAP_MOVE)) g_tAxis = (abs(dx) > abs(dy)) ? 'x' : 'y';
-      bool scrollable = (g_tProv >= 0 && maxScrollFor(g_tProv) > 0);
-      if (g_tAxis == 'y' && scrollable) {           // 可滚动列表:竖拖实时滚动
-        int ns = g_tStartScroll - dy, mx = maxScrollFor(g_tProv);
-        g_scroll[g_tProv] = ns < 0 ? 0 : (ns > mx ? mx : ns);
-        if (!g_gestureFired && dy > 0 && g_scroll[g_tProv] <= 0 && dy >= SWIPE_MIN) {   // 滚到顶再下拉=返回
-          act = ACT_SWIPE_DOWN; g_gestureFired = true;
-        }
-      } else if (!g_gestureFired) {                 // 阈值即触发(跟手:不等抬手就切页/返回)
+      if (!g_gestureFired) {                        // 阈值即触发(跟手:不等抬手就切页/返回)。列表不再手动滚动(改自动循环)
         if (g_tAxis == 'x' && abs(dx) >= SWIPE_MIN)      { act = (dx < 0) ? ACT_SWIPE_L : ACT_SWIPE_R; g_gestureFired = true; }
         else if (g_tAxis == 'y' && abs(dy) >= SWIPE_MIN) { act = (dy < 0) ? ACT_SWIPE_UP : ACT_SWIPE_DOWN; g_gestureFired = true; }
       }
