@@ -450,6 +450,21 @@ static uint32_t statusDotColor(SessStatus st) {
   }
 }
 
+// 列表表格:短状态词 + ctx% 分级配色
+static const char* statusShort(SessStatus st) {
+  switch (st) {
+    case ST_EXECUTING: return "Exec";
+    case ST_THINKING:  return "Think";
+    case ST_DONE:      return "Done";
+    default:           return "Wait";
+  }
+}
+static uint32_t ctxColor(int pct) {
+  if (pct >= 85) return 0xFF6B3C;   // 高:橙红
+  if (pct >= 60) return 0xFFB454;   // 中:琥珀
+  return 0x7FDCA0;                  // 低:绿
+}
+
 // 首页底部:session 运行数/总数(运行数绿色)
 static void drawSessionCount(int cy, int running, int total) {
   char rs[8]; snprintf(rs, sizeof(rs), "%d", running);
@@ -603,7 +618,7 @@ static int detailProv = -1, detailIdx = 0;
 static bool g_listView = false;   // true: 当前 provider 的会话列表(从主页滑入)
 
 // 列表页布局(466 屏内)
-static const int ROW_H = 47, LIST_TOP = 116, LIST_BOT = 56;
+static const int ROW_H = 40, LIST_TOP = 96, LIST_BOT = 86;   // 表格:单行/会话 + 顶部表头
 static int g_scroll[2] = { 0, 0 };                       // claude/codex 各自的滚动像素偏移
 
 // 触摸手势 → 抽象动作(action);导航只消费 action,改交互只动 handleAction()
@@ -666,11 +681,11 @@ static void renderListPage(int provIdx) {
 
   blitProviderArc(provIdx);
 
-  // 头部:与首页同款动画机器人(缩小;不再显示 CLAUDE·N 文本)
+  // 顶部:与首页同款小机器人(provider 标识)
   { float t = (millis() - bootMs) / 1000.0f;
     const char* mood = moodForUsage(max(p.sessUsed, p.weekUsed), p.activeCount, g_batt);
-    if (provIdx == 0) drawClaude(CX, 64, color, mood, t, 0.46f);
-    else              drawCodex(CX, 64, color, mood, t, 0.46f); }
+    if (provIdx == 0) drawClaude(CX, 42, color, mood, t, 0.32f);
+    else              drawCodex(CX, 42, color, mood, t, 0.32f); }
 
   // 空态
   if (p.nsess == 0) {
@@ -680,42 +695,51 @@ static void renderListPage(int provIdx) {
     return;
   }
 
-  // 裁剪窗 + 滚动绘制
+  // 表格列(左对齐,贴合圆屏可用宽);全 ASCII → FreeMono 无方框
+  const int colDot = 62, colSt = 74, colModel = 128, colCtx = 224, colTok = 266, colTurn = 360;
+
+  // 表头(固定,不滚动)
+  cv.setFont(&fonts::FreeMono9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_left);
+  cv.setTextColor(c565(0x6d6f75));
+  cv.drawString("St",    colSt,    78);
+  cv.drawString("Model", colModel, 78);
+  cv.drawString("Ctx",   colCtx,   78);
+  cv.drawString("Tok",   colTok,   78);
+  cv.drawString("Turn",  colTurn,  78);
+  cv.drawFastHLine(52, 90, SIZE - 104, c565(0x2a2c31));
+
+  // 滚动行(裁剪)
   int sc = g_scroll[provIdx];
   if (sc > maxScrollFor(provIdx)) { sc = maxScrollFor(provIdx); g_scroll[provIdx] = sc; }
-  cv.setClipRect(40, LIST_TOP, SIZE - 80, listViewH());
+  const int viewH = listViewH();
+  cv.setClipRect(40, LIST_TOP, SIZE - 80, viewH);
   for (int i = 0; i < p.nsess; i++) {
     int y = LIST_TOP - sc + i * ROW_H;
-    if (y + ROW_H < LIST_TOP || y > SIZE - LIST_BOT) continue;     // 屏外跳过
+    if (y + ROW_H < LIST_TOP || y > LIST_TOP + viewH) continue;
     const Sess& s = p.sess[i];
     SessStatus st = (SessStatus)s.status;
-    uint16_t dot = c565(statusDotColor(st));
-    const int dotX = 56, textX = 76;             // 圆点在左侧外槽,两行文本统一从 textX 左对齐
-
-    // 状态红绿灯圆点(与行1对齐)
-    cv.fillSmoothCircle(dotX, y + 15, 6, dot);
-
-    char nm[40]; truncCp(s.name, 14, nm, sizeof(nm));
-    // 行1:名称 + 状态词(状态词用红绿灯同色)
-    cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextDatum(middle_left);
-    cv.setTextColor(c565(0xe6e8ec)); cv.drawString(nm, textX, y + 14);
-    int wnm = cv.textWidth(nm);
-    cv.setFont(&fonts::FreeSans9pt7b); cv.setTextColor(dot);
-    cv.drawString(statusWord(st), textX + wnm + 10, y + 14);
-    // 行2:model · ctx% · tok · turn(efontCN 渲染 ·,不再方框)
-    char md[24]; modelShort(s.model, md, sizeof(md));
-    char kt[16]; fmtTokens(s.tokTotal, kt, sizeof(kt));
-    char l2[64]; snprintf(l2, sizeof(l2), "%s · %d%% · %s · t%d", md, s.ctxPct, kt, s.turn);
-    cv.setFont(&fonts::efontCN_16); cv.setTextColor(c565(0x8a8d94)); cv.setTextDatum(middle_left);
-    cv.drawString(l2, textX, y + 33);
-    // 分隔线
-    cv.drawFastHLine(textX, y + ROW_H - 1, SIZE - textX - 48, c565(0x1a1c20));
+    uint16_t dc = c565(statusDotColor(st));
+    int my = y + ROW_H / 2;
+    if (st == ST_EXECUTING)                                   // 活跃行高亮带
+      cv.fillRoundRect(48, y + 3, SIZE - 96, ROW_H - 5, 6, c565(shade(color, -0.82f)));
+    if (st == ST_EXECUTING) cv.fillSmoothCircle(colDot, my, 5, dc);   // 实心=运行
+    else { cv.drawCircle(colDot, my, 5, dc); cv.drawCircle(colDot, my, 4, dc); }   // 空心环=其余
+    cv.setFont(&fonts::FreeMono9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_left);
+    cv.setTextColor(dc);              cv.drawString(statusShort(st), colSt, my);
+    char md[16]; modelShort(s.model, md, sizeof(md));
+    cv.setTextColor(c565(0x8a8d94));  cv.drawString(md, colModel, my);
+    char cb[8]; snprintf(cb, sizeof(cb), "%d%%", s.ctxPct);
+    cv.setTextColor(c565(ctxColor(s.ctxPct))); cv.drawString(cb, colCtx, my);
+    char tb[12]; fmtTokens(s.tokTotal, tb, sizeof(tb));
+    cv.setTextColor(c565(0xe6e8ec));  cv.drawString(tb, colTok, my);
+    char rb[8]; snprintf(rb, sizeof(rb), "%d", s.turn);
+    cv.setTextColor(c565(0x8a8d94));  cv.drawString(rb, colTurn, my);
   }
   cv.clearClipRect();
 
-  // 顶/底渐隐(纯色淡出条,提示可滚动)
-  if (sc > 0)                       cv.fillRect(40, LIST_TOP, SIZE - 80, 8, c565(0x000000));
-  if (sc < maxScrollFor(provIdx))   cv.fillRect(40, SIZE - LIST_BOT - 8, SIZE - 80, 8, c565(0x000000));
+  // 顶/底渐隐(提示可滚动)
+  if (sc > 0)                     cv.fillRect(40, LIST_TOP, SIZE - 80, 6, c565(0x000000));
+  if (sc < maxScrollFor(provIdx)) cv.fillRect(40, LIST_TOP + viewH - 6, SIZE - 80, 6, c565(0x000000));
 
   drawDots(provIdx, color);
 }
