@@ -387,22 +387,6 @@ static void drawCodex(int ccx, int ccy, uint32_t color, const char* mood, float 
   }
 }
 
-// 小号吉祥物:3D orb + 两只眼,用于仪表盘/列表(大号 drawClaude/drawCodex 留给详情页)
-static void drawMiniMascot(int cx, int cy, int R, uint32_t color, bool isClaude, uint8_t status) {
-  drawAvatarOrb(cx, cy, R, color);
-  float open = (status == ST_EXECUTING) ? 1.15f : (status == ST_THINKING) ? 0.85f : 0.55f;
-  if (aBlink) open = 0.12f;
-  int ex = (int)(R * 0.34f), ey = cy - (int)(R * 0.05f);
-  int ew = (int)(R * 0.20f), eh = (int)(R * 0.30f * open) + 2;
-  uint16_t ec = isClaude ? c565(0x140a04) : c565(0x8AD8C7);
-  if (isClaude) {
-    cv.fillRoundRect(cx - ex - ew / 2, ey - eh / 2, ew, eh, 2, ec);
-    cv.fillRoundRect(cx + ex - ew / 2, ey - eh / 2, ew, eh, 2, ec);
-  } else {
-    cv.fillSmoothCircle(cx - ex, ey, max(2, eh / 2), ec);
-    cv.fillSmoothCircle(cx + ex, ey, max(2, eh / 2), ec);
-  }
-}
 
 // 倒计时格式(d/h/m/s 紧凑)
 static String fmtDur(long secs) {
@@ -456,22 +440,28 @@ static void drawMeter(int y, const char* label, int used, const String& reset, u
 }
 
 // 活跃会话胶囊(N ACTIVE;点它/上滑进会话列表)
-static void drawActivePill(int cy, int n, uint32_t color) {
-  bool on = n > 0; uint16_t cc = c565(color);
-  char num[4]; snprintf(num, sizeof(num), "%d", n);
-  cv.setFont(&fonts::FreeMonoBold9pt7b); int nW = cv.textWidth(num);
-  cv.setFont(&fonts::FreeSans9pt7b);     int tW = cv.textWidth("ACTIVE");
-  int contentW = 7 + 7 + nW + 8 + tW;
-  int w = contentW + 26, x = CX - w / 2, h = 30, y = cy - h / 2;
-  cv.fillRoundRect(x, y, w, h, 15, on ? c565(shade(color, -0.7)) : c565(0x0e0f12));
-  cv.drawRoundRect(x, y, w, h, 15, on ? cc : c565(0x2a2c31));
-  int ix = x + 13;
-  cv.fillCircle(ix + 3, cy, 3, on ? cc : c565(0x4d4f55));
-  cv.setFont(&fonts::FreeMonoBold9pt7b);
-  cv.setTextColor(on ? c565(COL_WHITE) : c565(0x8a8c92)); cv.setTextDatum(middle_left);
-  cv.drawString(num, ix + 11, cy);
-  cv.setFont(&fonts::FreeSans9pt7b); cv.setTextColor(c565(0x808288)); cv.setTextDatum(middle_left);
-  cv.drawString("ACTIVE", ix + 11 + nW + 8, cy);
+// 会话状态 → 红绿灯圆点颜色
+static uint32_t statusDotColor(SessStatus st) {
+  switch (st) {
+    case ST_EXECUTING: return 0x3CCB7F;   // 绿:运行中
+    case ST_THINKING:  return 0xFFB454;   // 黄:思考中
+    case ST_WAITING:   return 0xFF5D5D;   // 红:等待(需要你)
+    default:           return 0x6a6d74;   // 灰:已完成/其它
+  }
+}
+
+// 首页底部:session 运行数/总数(运行数绿色)
+static void drawSessionCount(int cy, int running, int total) {
+  char rs[8]; snprintf(rs, sizeof(rs), "%d", running);
+  char ts[12]; snprintf(ts, sizeof(ts), "/%d", total);
+  cv.setFont(&fonts::FreeMonoBold12pt7b); cv.setTextSize(1);
+  const char* lbl = "session ";
+  int lw = cv.textWidth(lbl), rw = cv.textWidth(rs), tw = cv.textWidth(ts);
+  int x = CX - (lw + rw + tw) / 2;
+  cv.setTextDatum(middle_left);
+  cv.setTextColor(c565(0x9a9ca2)); cv.drawString(lbl, x, cy);
+  cv.setTextColor(c565(0x3CCB7F)); cv.drawString(rs, x + lw, cy);            // 运行中:绿色
+  cv.setTextColor(c565(0x9a9ca2)); cv.drawString(ts, x + lw + rw, cy);
 }
 
 // 把某 provider 的弧(=max(sess,week))画进它的缓存环再贴到 cv;主页/列表共用,避免串味
@@ -666,7 +656,7 @@ static void renderUsagePage(int provIdx) {
   String wR = (epochOK && p.weekReset > nowE) ? fmtDur(p.weekReset - nowE) : String("");
   drawMeter(250, "usage",  p.sessUsed, sR, p.color);
   drawMeter(286, "weekly", p.weekUsed, wR, p.color);
-  drawActivePill(344, p.activeCount, p.color);
+  drawSessionCount(344, p.activeCount, p.nsess);    // session 运行/总数(运行数绿)
   drawWifiStatus(406);
   drawDots(provIdx, p.color);
 }
@@ -676,11 +666,11 @@ static void renderListPage(int provIdx) {
 
   blitProviderArc(provIdx);
 
-  // 头部:小吉祥物 + "CLAUDE · N"
-  drawMiniMascot(CX - 52, 60, 22, color, provIdx == 0, ST_THINKING);
-  char hd[24]; snprintf(hd, sizeof(hd), "%s · %d", provIdx == 0 ? "CLAUDE" : "CODEX", p.nsess);
-  cv.setFont(&fonts::FreeSans9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_left);
-  cv.setTextColor(c565(0xcfd2d8)); cv.drawString(hd, CX - 20, 60);
+  // 头部:与首页同款动画机器人(缩小;不再显示 CLAUDE·N 文本)
+  { float t = (millis() - bootMs) / 1000.0f;
+    const char* mood = moodForUsage(max(p.sessUsed, p.weekUsed), p.activeCount, g_batt);
+    if (provIdx == 0) drawClaude(CX, 64, color, mood, t, 0.46f);
+    else              drawCodex(CX, 64, color, mood, t, 0.46f); }
 
   // 空态
   if (p.nsess == 0) {
@@ -699,27 +689,27 @@ static void renderListPage(int provIdx) {
     if (y + ROW_H < LIST_TOP || y > SIZE - LIST_BOT) continue;     // 屏外跳过
     const Sess& s = p.sess[i];
     SessStatus st = (SessStatus)s.status;
-    const char* ico = st == ST_EXECUTING ? ">" : st == ST_THINKING ? "*" : st == ST_DONE ? "v" : "=";
-    uint16_t tint = c565(st == ST_EXECUTING ? shade(color, 0.25f) : st == ST_THINKING ? 0xffd479 : 0x8b9097);
+    uint16_t dot = c565(statusDotColor(st));
+    const int dotX = 56, textX = 76;             // 圆点在左侧外槽,两行文本统一从 textX 左对齐
 
-    char nm[40]; truncCp(s.name, 16, nm, sizeof(nm));
-    // 行1
+    // 状态红绿灯圆点(与行1对齐)
+    cv.fillSmoothCircle(dotX, y + 15, 6, dot);
+
+    char nm[40]; truncCp(s.name, 14, nm, sizeof(nm));
+    // 行1:名称 + 状态词(状态词用红绿灯同色)
     cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextDatum(middle_left);
-    int x = 48;
-    cv.setTextColor(c565(0xe6e8ec));
-    char l1[48]; snprintf(l1, sizeof(l1), "%s %s", ico, nm);
-    cv.drawString(l1, x, y + 14);
-    int wl1 = cv.textWidth(l1);
-    cv.setFont(&fonts::FreeSans9pt7b); cv.setTextColor(tint);
-    cv.drawString(statusWord(st), x + wl1 + 10, y + 14);
-    // 行2
+    cv.setTextColor(c565(0xe6e8ec)); cv.drawString(nm, textX, y + 14);
+    int wnm = cv.textWidth(nm);
+    cv.setFont(&fonts::FreeSans9pt7b); cv.setTextColor(dot);
+    cv.drawString(statusWord(st), textX + wnm + 10, y + 14);
+    // 行2:model · ctx% · tok · turn(efontCN 渲染 ·,不再方框)
     char md[24]; modelShort(s.model, md, sizeof(md));
-    char kt[16]; fmtK(s.tokTotal, kt, sizeof(kt));
+    char kt[16]; fmtTokens(s.tokTotal, kt, sizeof(kt));
     char l2[64]; snprintf(l2, sizeof(l2), "%s · %d%% · %s · t%d", md, s.ctxPct, kt, s.turn);
-    cv.setFont(&fonts::FreeMono9pt7b); cv.setTextColor(c565(0x8a8d94));
-    cv.drawString(l2, x, y + 34);
+    cv.setFont(&fonts::efontCN_16); cv.setTextColor(c565(0x8a8d94)); cv.setTextDatum(middle_left);
+    cv.drawString(l2, textX, y + 33);
     // 分隔线
-    cv.drawFastHLine(48, y + ROW_H - 1, SIZE - 96, c565(0x1a1c20));
+    cv.drawFastHLine(textX, y + ROW_H - 1, SIZE - textX - 48, c565(0x1a1c20));
   }
   cv.clearClipRect();
 
