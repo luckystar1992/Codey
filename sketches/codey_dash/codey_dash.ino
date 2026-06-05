@@ -401,15 +401,6 @@ static void drawMiniMascot(int cx, int cy, int R, uint32_t color, bool isClaude,
   }
 }
 
-static const char* moodForStatus(uint8_t status) {
-  switch (status) {
-    case ST_EXECUTING: return "alert";
-    case ST_THINKING:  return "focused";
-    case ST_DONE:      return "happy";
-    default:           return "sleepy";   // waiting
-  }
-}
-
 // 倒计时格式(d/h/m/s 紧凑)
 static String fmtDur(long secs) {
   if (secs < 0) secs = 0;
@@ -719,6 +710,17 @@ static void renderListPage(int provIdx) {
 
   drawDots(provIdx, color);
 }
+// 数据小块:顶部小标签 + 中部大数值
+static void drawStatTile(int cx, int cy, int w, int h, const char* label, const char* value, uint32_t color) {
+  cv.fillRoundRect(cx - w / 2, cy - h / 2, w, h, 7, c565(shade(color, -0.80f)));
+  cv.drawRoundRect(cx - w / 2, cy - h / 2, w, h, 7, c565(shade(color, -0.42f)));
+  cv.setFont(&fonts::Font0); cv.setTextDatum(middle_center);
+  cv.setTextColor(c565(0x8a9097)); cv.drawString(label, cx, cy - h / 2 + 11);
+  cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextColor(c565(COL_WHITE));
+  cv.drawString(value, cx, cy + 5);
+}
+
+// 会话详情:三宫格数据风(name·PROVIDER / model·时长 / 小吉祥物+状态 / ctx·turn·tok 三宫格 / 任务 / git·sub / 位置)
 static void renderDetailPage() {
   const Prov& p = PROV[detailProv];
   if (detailIdx < 0 || detailIdx >= p.nsess) { cv.fillSprite(c565(0x000000)); return; }
@@ -726,64 +728,67 @@ static void renderDetailPage() {
   uint32_t color = p.color;
   SessStatus st = (SessStatus)s.status;
 
-  // 弧 = ctx%(详情页每次重算到 cv,频率低可接受)
   cv.fillSprite(c565(0x000000));
-  drawArc(cv, color, s.ctxPct);
+  drawArc(cv, color, s.ctxPct);                       // 边缘弧 = ctx%
 
-  // 头部:点 + provider · name
-  cv.fillCircle(CX - 70, 36, 4, c565(color));
-  char title[48]; char nm[40]; truncCp(s.name, 14, nm, sizeof(nm));
-  snprintf(title, sizeof(title), "%s · %s", detailProv == 0 ? "Claude" : "Codex", nm);
-  cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextSize(1); cv.setTextDatum(middle_left);
-  cv.setTextColor(c565(0xcfd2d8)); cv.drawString(title, CX - 58, 36);
+  // 头部:provider 点 + 名称 · PROVIDER
+  char nm[40]; truncCp(s.name, 12, nm, sizeof(nm));
+  char title[56]; snprintf(title, sizeof(title), "%s · %s", nm, detailProv == 0 ? "CLAUDE" : "CODEX");
+  cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextSize(1); cv.setTextDatum(middle_center);
+  int tWid = cv.textWidth(title);
+  cv.fillCircle(CX - tWid / 2 - 11, 44, 4, c565(color));
+  cv.setTextColor(c565(0xcfd2d8)); cv.drawString(title, CX, 44);
 
-  // 第二行:model · 时长 · turn
+  // 第二行:model · 已运行时长
   long nowE = time(nullptr); bool epochOK = nowE > 1700000000L;
   long elapsed = (epochOK && s.startedAt > 0) ? (nowE - s.startedAt) : 0;
   char md[24]; modelShort(s.model, md, sizeof(md));
   char el[16]; fmtElapsed(elapsed, el, sizeof(el));
-  char l2[64]; snprintf(l2, sizeof(l2), "%s · %s · turn %d", md, el, s.turn);
+  char l2[48]; snprintf(l2, sizeof(l2), "%s · %s", md, el);
   cv.setFont(&fonts::FreeMono9pt7b); cv.setTextDatum(middle_center);
-  cv.setTextColor(c565(0x7d828a)); cv.drawString(l2, CX, 64);
+  cv.setTextColor(c565(0x7d828a)); cv.drawString(l2, CX, 68);
 
-  // 中央大吉祥物 + 状态词
-  float t = (millis() - bootMs) / 1000.0f;
-  const char* mood = moodForStatus(s.status);
-  if (detailProv == 0) drawClaude(CX, 150, color, mood, t);
-  else                 drawCodex(CX, 150, color, mood, t);
+  // 小号动画吉祥物 + 状态词
+  drawMiniMascot(CX, 122, 42, color, detailProv == 0, s.status);
   cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextDatum(middle_center);
   uint16_t sw = c565(st == ST_EXECUTING ? shade(color, 0.25f) : st == ST_THINKING ? 0xffd479 : 0x8b9097);
-  cv.setTextColor(sw); cv.drawString(statusWord(st), CX, 224);
+  cv.setTextColor(sw); cv.drawString(statusWord(st), CX, 180);
 
-  // 信息行(左对齐,逐行)
-  const int ix = 66, iw = SIZE - 132; int y = 256; const int dy = 26;
-  cv.setFont(&fonts::FreeMono9pt7b); cv.setTextDatum(middle_left);
-  cv.setClipRect(ix, y - 14, iw, dy * 4 + 8);
+  // 三宫格:ctx / turn / tokens
+  char ctxv[8]; snprintf(ctxv, sizeof(ctxv), "%d%%", s.ctxPct);
+  char turnv[8]; snprintf(turnv, sizeof(turnv), "%d", s.turn);
+  char tokv[12]; fmtK(s.tokTotal, tokv, sizeof(tokv));
+  const int tw = 96, th = 50, gap = 10, ty = 228;
+  drawStatTile(CX - tw - gap, ty, tw, th, "CTX",    ctxv,  color);
+  drawStatTile(CX,            ty, tw, th, "TURN",   turnv, color);
+  drawStatTile(CX + tw + gap, ty, tw, th, "TOKENS", tokv,  color);
+
+  // 任务行 + git/subagents 行(居中,裁剪防溢出圆屏)
   char buf[96];
-  // ① 当前任务
+  cv.setFont(&fonts::FreeMono9pt7b); cv.setTextDatum(middle_center);
   if (s.task[0]) { cv.setTextColor(c565(0xe6e8ec)); snprintf(buf, sizeof(buf), "* %s", s.task); }
   else           { cv.setTextColor(c565(0x6f757d)); snprintf(buf, sizeof(buf), "* idle"); }
-  cv.drawString(buf, ix, y); y += dy;
-  // ② git
-  cv.setTextColor(c565(0xc3c7cd));
-  snprintf(buf, sizeof(buf), "git %s +%d ~%d", s.branch[0] ? s.branch : "-", s.added, s.modified);
-  cv.drawString(buf, ix, y); y += dy;
-  // ③ ctx / tokens
-  char kc[16], kw[16], kt[16];
-  fmtK(s.ctxTok, kc, sizeof(kc)); fmtK(s.ctxWin, kw, sizeof(kw)); fmtK(s.tokTotal, kt, sizeof(kt));
-  snprintf(buf, sizeof(buf), "ctx %s/%s · %s tok", kc, kw, kt);
-  cv.drawString(buf, ix, y); y += dy;
-  // ④ subagents · ports
-  int n = snprintf(buf, sizeof(buf), "%d subagents", s.subagents);
-  for (int i = 0; i < s.nports && n < (int)sizeof(buf) - 8; i++)
-    n += snprintf(buf + n, sizeof(buf) - n, "%s:%d", i == 0 ? " · " : " ", s.ports[i]);
-  cv.drawString(buf, ix, y);
-  cv.clearClipRect();
+  cv.setClipRect(48, 278, SIZE - 96, 20); cv.drawString(buf, CX, 288); cv.clearClipRect();
 
-  // 位置:session i/N
-  char pos[24]; snprintf(pos, sizeof(pos), "session %d/%d", detailIdx + 1, p.nsess);
-  cv.setFont(&fonts::FreeSans9pt7b); cv.setTextDatum(middle_center);
-  cv.setTextColor(c565(0x5a5d64)); cv.drawString(pos, CX, 438);
+  int n = snprintf(buf, sizeof(buf), "git %s +%d ~%d", s.branch[0] ? s.branch : "-", s.added, s.modified);
+  if (s.subagents > 0) n += snprintf(buf + n, sizeof(buf) - n, " · %dsub", s.subagents);
+  if (s.nports > 0)    snprintf(buf + n, sizeof(buf) - n, " · :%d", s.ports[0]);
+  cv.setTextColor(c565(0xc3c7cd));
+  cv.setClipRect(48, 302, SIZE - 96, 20); cv.drawString(buf, CX, 312); cv.clearClipRect();
+
+  // 底部:位置点 + i/N
+  int nd = p.nsess > 9 ? 9 : p.nsess;
+  char pos[12]; snprintf(pos, sizeof(pos), "%d/%d", detailIdx + 1, p.nsess);
+  cv.setFont(&fonts::FreeSans9pt7b); int posW = cv.textWidth(pos);
+  const int dotW = 7, dgap = 6;
+  int dotsW = nd * dotW + (nd - 1) * dgap;
+  int x0 = CX - (dotsW + 12 + posW) / 2;
+  for (int i = 0; i < nd; i++) {
+    bool cur = (i == detailIdx) || (detailIdx >= 9 && i == 8);
+    cv.fillSmoothCircle(x0 + i * (dotW + dgap) + dotW / 2, 410, cur ? 3 : 2, c565(cur ? color : 0x44474e));
+  }
+  cv.setTextDatum(middle_left); cv.setTextColor(c565(0x6f757d));
+  cv.drawString(pos, x0 + dotsW + 12, 410);
 }
 
 // ---------- Arduino entry points ----------
@@ -1033,6 +1038,7 @@ void setup() {
   M5.Display.setRotation(0);
   Serial.begin(115200);
   Serial.println("codey_dash booted");
+  Serial.printf("[touch] enabled=%d  count=%d\n", M5.Touch.isEnabled(), M5.Touch.getCount());
 
   g_prefs.begin("codey", false);                  // persisted settings (brightness/volume/macip)
   g_bright = g_prefs.getUChar("bright", 255);
@@ -1300,6 +1306,7 @@ void loop() {
     if (td.wasPressed()) {
       g_tDown = true; g_tx0 = td.x; g_ty0 = td.y; g_tAxis = 0;
       g_tProv = curListProv(); g_tStartScroll = (g_tProv >= 0) ? g_scroll[g_tProv] : 0;
+      Serial.printf("[touch] press %d,%d\n", td.x, td.y);
     } else if (g_tDown && td.isPressed()) {
       int dx = td.x - g_tx0, dy = td.y - g_ty0;
       if (!g_tAxis && (abs(dx) > TAP_MOVE || abs(dy) > TAP_MOVE)) g_tAxis = (abs(dx) > abs(dy)) ? 'x' : 'y';
@@ -1311,11 +1318,12 @@ void loop() {
       lastActiveMs = now;
     } else if (g_tDown && td.wasReleased()) {
       int dx = td.x - g_tx0, dy = td.y - g_ty0;
-      if (g_tAxis == 'x' && abs(dx) >= SWIPE_MIN) swipePage(dx < 0 ? 1 : -1);   // 横滑
+      if (g_tAxis == 'x' && abs(dx) >= SWIPE_MIN) { Serial.printf("[touch] swipe %s\n", dx < 0 ? "L" : "R"); swipePage(dx < 0 ? 1 : -1); }   // 横滑
       else if (g_tAxis == 'y' && g_tProv < 0 && detailProv < 0 && !g_listView && dy < 0 && abs(dy) >= SWIPE_MIN) {
-        g_listView = true;                                                        // 上划主页 → 列表
+        Serial.println("[touch] swipe-up -> list"); g_listView = true;            // 上划主页 → 列表
       } else if (g_tAxis == 0 && abs(dx) < TAP_MOVE && abs(dy) < TAP_MOVE) {    // 点击 -> 单/双击判定
         if (now - g_lastTapMs < DBL_MS) { g_lastTapMs = 0; g_pendTapRow = -2;   // 双击 -> 退出详情/关列表
+          Serial.println("[touch] double-tap -> back");
           if (detailProv >= 0) exitDetail(); else if (g_listView) g_listView = false; }
         else { g_lastTapMs = now;                                                // 记一次单击,延迟派发
           g_pendTapMs = now; g_pendTapRow = (g_tProv >= 0) ? rowHitAt(g_tProv, g_ty0) : -1; }
@@ -1323,7 +1331,7 @@ void loop() {
       g_tDown = false; g_tAxis = 0; g_tProv = -1; lastActiveMs = now;
     }
     // 单击延迟派发(等过双击窗口确认不是双击)
-    if (g_pendTapRow != -2 && now - g_pendTapMs >= DBL_MS) { doTap(g_pendTapRow); g_pendTapRow = -2; }
+    if (g_pendTapRow != -2 && now - g_pendTapMs >= DBL_MS) { Serial.printf("[touch] tap row=%d\n", g_pendTapRow); doTap(g_pendTapRow); g_pendTapRow = -2; }
   } else {                                   // 进入设置/语音态:清手势残留(防退出后用旧坐标误滚动)
     g_tDown = false; g_tAxis = 0; g_tProv = -1; g_pendTapRow = -2;
   }
