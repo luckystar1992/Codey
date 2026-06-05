@@ -2,9 +2,13 @@
 """豆包 seed-asr 流式(sauc 2.0)客户端 + 文件回落。
 二进制协议参考 meme/doubao_streaming.py(源自 xiaozhi-esp32-server)。"""
 import asyncio
+import base64
 import gzip
 import json
 import os
+import struct
+import time
+import urllib.request
 import uuid
 
 import websockets
@@ -200,11 +204,69 @@ class StreamingASRSession:
             pass
 
 
+SUBMIT_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit"
+QUERY_URL  = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query"
+FILE_RESOURCE_ID = os.environ.get("DOUBAO_RESOURCE_ID", "volc.seedasr.auc")
+
+
+def pcm_to_wav_bytes(pcm, rate=16000, bits=16, channels=1):
+    byte_rate = rate * channels * bits // 8
+    block_align = channels * bits // 8
+    data_len = len(pcm)
+    return (b"RIFF" + struct.pack("<I", 36 + data_len) + b"WAVE"
+            + b"fmt " + struct.pack("<IHHIIHH", 16, 1, channels, rate, byte_rate, block_align, bits)
+            + b"data" + struct.pack("<I", data_len) + pcm)
+
+
+def _post_json(url, headers, body):
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
+                                 headers={**headers, "Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return dict(r.headers), r.read()
+
+
+async def transcribe_wav_bytes(wav_bytes, timeout_s=15.0):
+    c = _cfg()
+    if not c["api_key"]:
+        return {"error": "DOUBAO_API_KEY empty"}
+    req_id = str(uuid.uuid4())
+    headers = {"x-api-key": c["api_key"], "X-Api-Resource-Id": FILE_RESOURCE_ID,
+               "X-Api-Request-Id": req_id, "X-Api-Sequence": "-1"}
+    body = {"user": {"uid": "codey"},
+            "audio": {"data": base64.b64encode(wav_bytes).decode("ascii"),
+                      "format": "wav", "rate": 16000, "bits": 16, "channel": 1},
+            "request": {"model_name": "bigmodel", "enable_itn": True, "enable_punc": True}}
+
+    def _submit():
+        h, _ = _post_json(SUBMIT_URL, headers, body)
+        return h.get("X-Api-Status-Code", "")
+    status = await asyncio.to_thread(_submit)
+    if status != "20000000":
+        return {"error": f"submit failed: {status}"}
+
+    deadline = time.time() + timeout_s
+    delay = 0.1
+    while time.time() < deadline:
+        await asyncio.sleep(delay)
+
+        def _query():
+            h, raw = _post_json(QUERY_URL, headers, {})
+            return h.get("X-Api-Status-Code", ""), raw
+        st, raw = await asyncio.to_thread(_query)
+        if st == "20000000":
+            data = json.loads(raw.decode("utf-8"))
+            return {"text": data.get("result", {}).get("text", "")}
+        if st[:1] in ("4", "5"):
+            return {"error": f"query failed: {st}"}
+        delay = min(delay * 1.6, 0.5)
+    return {"error": f"timeout {timeout_s}s"}
+
+
 class DoubaoBackend:
-    """适配 asr_stream 后端接口。accept 返回当前累积 partial;stop 走 finalize(+文件回落见后续任务)。"""
+    """适配 asr_stream 后端接口。accept 返回当前累积 partial;stop 走 finalize(+文件回落)。"""
     def __init__(self):
         self.sess = StreamingASRSession()
-        self._pcm = bytearray()       # 留存原始 PCM 供文件回落(后续任务)
+        self._pcm = bytearray()       # 留存原始 PCM 供文件回落
 
     async def start(self):
         self.sess.start_background()
@@ -215,5 +277,8 @@ class DoubaoBackend:
         return [{"text": self.sess.merger.text, "final": False}]
 
     async def stop(self):
-        text = await self.sess.finalize()
-        return [{"text": (text or "").strip(), "final": True}]
+        text = (await self.sess.finalize() or "").strip()
+        if not text and len(self._pcm) > 16000:          # 流式空 + 有 >0.5s 音频 → 文件回落
+            res = await transcribe_wav_bytes(pcm_to_wav_bytes(bytes(self._pcm)))
+            text = (res.get("text") or "").strip()
+        return [{"text": text, "final": True}]
