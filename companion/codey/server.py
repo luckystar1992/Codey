@@ -1,9 +1,12 @@
 """HTTP 服务:GET /codey/state(用量+会话) · POST /codey/asr(语音)。供手表 LAN 拉取。"""
 import json
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
 
+from . import asr_history
 from . import collect
 from .asr import WhisperManager
 from .chime import ChimeState
@@ -11,6 +14,31 @@ from .state import build_state
 
 REFRESH_MS = 2000
 MAX_ASR_BYTES = 8_000_000
+HISTORY_MAX = 500
+WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")   # companion/web
+SIM_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                        "sim", "codey-sim.html")   # repo/sim/codey-sim.html
+
+
+def parse_history_n(path):
+    try:
+        q = parse_qs(urlparse(path).query)
+        n = int(q.get("n", ["100"])[0])
+    except (ValueError, TypeError):
+        return 100
+    return max(1, min(HISTORY_MAX, n))
+
+
+def read_static(path):
+    try:
+        with open(path, "rb") as f:
+            body = f.read()
+    except OSError:
+        return None, None
+    ext = os.path.splitext(path)[1].lower()
+    ctype = {".html": "text/html; charset=utf-8", ".js": "text/javascript",
+             ".css": "text/css", ".json": "application/json"}.get(ext, "application/octet-stream")
+    return body, ctype
 
 
 class App:
@@ -59,8 +87,18 @@ def make_handler(app):
             self.wfile.write(body)
 
         def do_GET(self):
-            if self.path.startswith("/codey/state"):
+            path = urlparse(self.path).path
+            if path in ("/", "/admin", "/admin.html"):
+                body, ctype = read_static(os.path.join(WEB_DIR, "admin.html"))
+                self._send(200, body, ctype) if body is not None else self._send(404, b"admin.html missing", "text/plain")
+            elif path == "/sim":
+                body, ctype = read_static(SIM_PATH)
+                self._send(200, body, ctype) if body is not None else self._send(404, b"sim missing", "text/plain")
+            elif path.startswith("/codey/state"):
                 self._send(200, json.dumps(app.state()).encode())
+            elif path.startswith("/codey/history"):
+                self._send(200, json.dumps({"entries": asr_history.recent(parse_history_n(self.path))},
+                                           ensure_ascii=False).encode())
             else:
                 self._send(404, b"not found", "text/plain")
 
