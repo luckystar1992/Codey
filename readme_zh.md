@@ -75,16 +75,15 @@ Codey/
 
 ```text
 Claude Code statusline ─┐
-                        ├─ companion/server.js ── HTTP /codey/state ── M5 StopWatch
+                        ├─ companion (codey_companion.py) ─── HTTP /codey/state ── M5 StopWatch
 ccusage fallback ───────┤
-                        │
-CodexBar history ───────┘
-
-M5 麦克风 ── WebSocket PCM ── companion/asr_stream.py ── 实时转写文本
+                        ├─ WebSocket /ws（ASR）──────────── M5 麦克风 PCM
+CodexBar history ───────┤
+                        └─ Web 管理台（http://localhost:8787）── 设备镜像 + 历史
 ```
 
-手表端不直接调用 Claude Code 或 Codex。它只连接运行在 Mac 上的 Companion 进程，由
-Companion 把不同来源的额度数据标准化为统一 JSON。
+手表连接运行在 Mac 上的统一 Companion 进程。Companion 把各来源额度数据标准化为统一 JSON，
+处理 WebSocket 上的语音转写，并提供 Web 管理台用于监控和查看识别历史。
 
 ## 依赖
 
@@ -157,17 +156,23 @@ chmod +x companion/codey-statusline.sh
 
 ## 运行
 
-启动 Companion：
+启动统一 Companion：
 
 ```bash
 cd companion
-npm start
+python3 codey_companion.py
 ```
 
-在 Mac 上检查 API：
+检查状态 API：
 
 ```bash
 curl http://127.0.0.1:8787/codey/state
+```
+
+打开 Web 管理台：
+
+```bash
+open http://127.0.0.1:8787/
 ```
 
 编译主仪表盘固件：
@@ -191,22 +196,36 @@ curl http://127.0.0.1:8787/codey/state
 首次启动时，手表会创建名为 `Codey-Setup` 的 Wi-Fi 配网热点。用手机或电脑连接该热点，
 打开 `192.168.4.1`，选择与运行 Companion 的 Mac 相同的局域网。
 
-## 可选：流式 ASR
+## Companion 服务
 
-在你偏好的 Python 环境中安装依赖：
+启动统一的 Companion（单一进程，一体化）：
 
 ```bash
-pip install numpy websockets sherpa-onnx
+cd companion
+python3 codey_companion.py
 ```
 
-启动流式 ASR 服务：
+启动后包含：
+- HTTP 状态 API（`:8787`，对应 `GET /codey/state`）
+- ASR WebSocket（`:8788`，接收 16 kHz 单声道 PCM）
+- Web 管理台（`http://<mac>:8787/`，设备镜像 + 识别历史）
+
+Web 管理台展示：
+- **设备镜像**（`/sim`）：实时轮询 `/codey/state` 显示手表状态
+- **识别历史**（`/codey/history`）：从 `companion/data/asr_history.jsonl` 读取识别记录
+
+ASR 识别历史存储为行分隔 JSON 文件（每行一条记录，带 ISO 时间码）：
+
+```bash
+cat companion/data/asr_history.jsonl
+```
+
+开发时 `asr_stream.py` 仍可单独运行于 `:8788`：
 
 ```bash
 cd companion
 python3 asr_stream.py
 ```
-
-固件会连接 `ws://<mac-ip>:8788/`，并从 StopWatch 麦克风发送 16 kHz 单声道 PCM 音频。
 
 ### 语音输入桥
 

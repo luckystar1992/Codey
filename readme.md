@@ -79,16 +79,16 @@ Codey/
 
 ```text
 Claude Code statusline ─┐
-                        ├─ companion/server.js ── HTTP /codey/state ── M5 StopWatch
+                        ├─ companion (codey_companion.py) ─── HTTP /codey/state ── M5 StopWatch
 ccusage fallback ───────┤
-                        │
-CodexBar history ───────┘
-
-M5 microphone ── WebSocket PCM ── companion/asr_stream.py ── live transcript
+                        ├─ WebSocket /ws (ASR) ────────────── M5 microphone PCM
+CodexBar history ───────┤
+                        └─ Web admin (http://localhost:8787) ── device mirror + history
 ```
 
-The watch does not call Claude Code or Codex directly. It connects to a companion process
-running on the Mac, and the companion normalizes all usage sources into one JSON payload.
+The watch connects to a single companion process on the Mac. The companion normalizes all usage sources
+into one JSON payload, handles voice transcription over WebSocket, and provides a web admin UI for
+monitoring and reviewing ASR history.
 
 ## Requirements
 
@@ -161,17 +161,23 @@ The wrapper writes the latest Claude usage to:
 
 ## Run
 
-Start the companion service:
+Start the companion (all-in-one):
 
 ```bash
 cd companion
-npm start
+python3 codey_companion.py
 ```
 
-Check the API from the Mac:
+Check the state API:
 
 ```bash
 curl http://127.0.0.1:8787/codey/state
+```
+
+Open the web admin:
+
+```bash
+open http://127.0.0.1:8787/
 ```
 
 Build the main dashboard firmware:
@@ -195,23 +201,36 @@ Open the serial monitor:
 On first boot, the watch opens a Wi-Fi setup hotspot named `Codey-Setup`. Join it from a
 phone or laptop, open `192.168.4.1`, and select the LAN used by the Mac running the companion.
 
-## Optional Streaming ASR
+## Companion Service
 
-Install the Python ASR dependencies in your preferred environment:
+Start the unified companion (single process, all-in-one):
 
 ```bash
-pip install numpy websockets sherpa-onnx
+cd companion
+python3 codey_companion.py
 ```
 
-Run the streaming ASR server:
+This starts:
+- HTTP state API on `:8787` (`GET /codey/state`)
+- ASR WebSocket on `:8788` (receives 16 kHz mono PCM)
+- Web admin UI at `http://<mac>:8787/` (device mirror + recognition history)
+
+The web admin shows:
+- **Device mirror** (`/sim`): live watch state via polling `/codey/state`
+- **ASR history** (`/codey/history`): recognition history from `companion/data/asr_history.jsonl`
+
+ASR history is stored as a line-delimited JSON file (one record per line, with ISO timestamp):
+
+```bash
+cat companion/data/asr_history.jsonl
+```
+
+For development, `asr_stream.py` can still run standalone on `:8788`:
 
 ```bash
 cd companion
 python3 asr_stream.py
 ```
-
-The firmware connects to `ws://<mac-ip>:8788/` and streams 16 kHz mono PCM from the
-StopWatch microphone.
 
 ### Voice input bridge
 

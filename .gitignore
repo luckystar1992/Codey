@@ -69,5 +69,8 @@ companion/models/**/*.bin
 companion/models/**/*.onnx
 companion/models/**/*.int8.onnx
 
+# Runtime ASR history and companion generated data
+companion/data/
+
 # Superpowers brainstorming (visual companion) scratch dir
 .superpowers/
