@@ -271,17 +271,17 @@ static void drawAvatarOrb(int cx, int cy, int R, uint32_t color) {
 }
 
 // Claude pixel creature (13x15 grid), lit from the upper-left for a 3D look.
-static void drawClaude(int ccx, int ccy, uint32_t color, const char* mood, float t) {
-  const int GW = 13, GH = 15; const float cell = 102.0f / GH;   // 10% smaller
-  float bob = sinf(t * 1.7f) * 2.0f;
-  if (!strcmp(mood, "alert")) bob = -fabsf(sinf(t * 4.2f)) * 5.0f;   // alert hops
+static void drawClaude(int ccx, int ccy, uint32_t color, const char* mood, float t, float scale) {
+  const int GW = 13, GH = 15; const float cell = (102.0f / GH) * scale;   // scale 缩放整体尺寸
+  float bob = sinf(t * 1.7f) * 2.0f * scale;
+  if (!strcmp(mood, "alert")) bob = -fabsf(sinf(t * 4.2f)) * 5.0f * scale;   // alert hops
   float ox = ccx - (GW * cell) / 2.0f, oy = ccy - (GH * cell) / 2.0f + bob;
   auto PX = [&](float v) { return ox + v * cell; };
   auto PY = [&](float v) { return oy + v * cell; };
 
   uint32_t colHi = shade(color, 0.22), colLo = shade(color, -0.26);
 
-  drawAvatarOrb(ccx, ccy, 63, color);   // 3D-shaded backing orb (10% smaller)
+  drawAvatarOrb(ccx, ccy, (int)(63 * scale), color);   // 3D-shaded backing orb
 
   float legCols[4] = { 2.4f, 4.4f, 7.6f, 9.6f };
   for (int i = 0; i < 4; i++) {
@@ -311,7 +311,7 @@ static void drawClaude(int ccx, int ccy, uint32_t color, const char* mood, float
     if (open > 0.5f) cv.fillRect(PX(exC[k] - ew / 2 + ex + 0.1f), PY(ey + 0.12f), cell * 0.42f, cell * 0.42f, c565(0xD8D8D8));
   }
   if (!strcmp(mood, "alert")) {
-    int bx = ccx + 40, by = ccy - 48;
+    int bx = ccx + (int)(40 * scale), by = ccy - (int)(48 * scale);
     cv.fillRoundRect(bx - 13, by - 13, 26, 26, 7, c565(COL_WHITE));
     cv.setFont(&fonts::FreeMonoBold12pt7b); cv.setTextColor(c565(0x0a0a0a)); cv.setTextDatum(middle_center);
     cv.drawString("!", bx, by);
@@ -321,10 +321,10 @@ static void drawClaude(int ccx, int ccy, uint32_t color, const char* mood, float
 // Codex mascot — a cute rounded helper-bot ported from robot-blink.svg: gray two-tone
 // shell lit from the left, a dark indigo visor holding two mint eyes that blink, a little
 // white smile, side ears and a rounded body. SVG(508x526) is mapped to the screen 1:1.
-static void drawCodex(int ccx, int ccy, uint32_t color, const char* mood, float t) {
+static void drawCodex(int ccx, int ccy, uint32_t color, const char* mood, float t, float scale) {
   (void)mood;
-  const float S = 0.252f;                                  // SVG units -> screen px (10% smaller, matches Claude)
-  const float bob = sinf(t * 1.6f) * 2.0f;                 // gentle idle bob
+  const float S = 0.252f * scale;                          // SVG units -> screen px,scale 缩放整体
+  const float bob = sinf(t * 1.6f) * 2.0f * scale;         // gentle idle bob
   auto X = [&](float sx) { return (int)lroundf(ccx + (sx - 260.0f) * S); };
   auto Y = [&](float sy) { return (int)lroundf(ccy + (sy - 274.0f) * S + bob); };
   auto W = [&](float w)  { return (int)lroundf(w * S); };
@@ -337,8 +337,8 @@ static void drawCodex(int ccx, int ccy, uint32_t color, const char* mood, float 
   const uint16_t eyeGlow = c565(shade(0x8AD8C7, -0.45f));
   const uint16_t white   = c565(0xFFFFFF);
 
-  // 3D-shaded backing orb (10% smaller)
-  drawAvatarOrb(ccx, (int)lroundf(ccy + bob), 63, color);
+  // 3D-shaded backing orb
+  drawAvatarOrb(ccx, (int)lroundf(ccy + bob), (int)(63 * scale), color);
 
   // two-tone rounded rect split vertically at `seam` (left lit, right shaded)
   auto twoTone = [&](int x, int y, int w, int h, int r, uint16_t hi, uint16_t lo) {
@@ -424,6 +424,16 @@ static const char* moodForUsage(int used, int active, int battery) {
   if (used >= 65)    return "tired";
   if (used >= 40)    return "focused";
   return "happy";
+}
+
+// 会话状态 → 详情页大吉祥物心情(动画与首页同款)
+static const char* moodForStatus(uint8_t status) {
+  switch (status) {
+    case ST_EXECUTING: return "alert";
+    case ST_THINKING:  return "focused";
+    case ST_DONE:      return "happy";
+    default:           return "sleepy";   // waiting
+  }
 }
 
 // USAGE/WEEKLY 分段表(还原旧版)
@@ -643,8 +653,8 @@ static void renderUsagePage(int provIdx) {
   drawHeader(p, String(clk));
   float t = (millis() - bootMs) / 1000.0f;
   const char* mood = moodForUsage(max(p.sessUsed, p.weekUsed), p.activeCount, g_batt);
-  if (provIdx == 0) drawClaude(CX, 150, p.color, mood, t);
-  else              drawCodex(CX, 150, p.color, mood, t);
+  if (provIdx == 0) drawClaude(CX, 150, p.color, mood, t, 1.0f);
+  else              drawCodex(CX, 150, p.color, mood, t, 1.0f);
   const char* mdl = (provIdx == 0) ? g_model : g_codexModel;
   if (mdl[0]) {
     cv.setFont(&fonts::FreeSans9pt7b); cv.setTextSize(1);
@@ -757,8 +767,11 @@ static void renderDetailPage() {
   cv.setFont(&fonts::FreeMono9pt7b); cv.setTextDatum(middle_center);
   cv.setTextColor(c565(0x7d828a)); cv.drawString(l2, CX, 68);
 
-  // 小号动画吉祥物 + 状态词
-  drawMiniMascot(CX, 122, 42, color, detailProv == 0, s.status);
+  // 缩小版的首页同款动画机器人 + 状态词
+  float t = (millis() - bootMs) / 1000.0f;
+  const char* mood = moodForStatus(s.status);
+  if (detailProv == 0) drawClaude(CX, 118, color, mood, t, 0.62f);
+  else                 drawCodex(CX, 118, color, mood, t, 0.62f);
   cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextDatum(middle_center);
   uint16_t sw = c565(st == ST_EXECUTING ? shade(color, 0.25f) : st == ST_THINKING ? 0xffd479 : 0x8b9097);
   cv.setTextColor(sw); cv.drawString(statusWord(st), CX, 180);
