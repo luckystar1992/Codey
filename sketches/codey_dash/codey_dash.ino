@@ -1325,9 +1325,13 @@ void loop() {
       lastActiveMs = now;
     } else if (!touching && g_tDown) {                             // —— 抬起沿(用最后有效坐标)——
       int dx = g_tLastX - g_tx0, dy = g_tLastY - g_ty0;
-      if (g_tAxis == 'x' && abs(dx) >= SWIPE_MIN) swipePage(dx < 0 ? 1 : -1);   // 横滑
-      else if (g_tAxis == 'y' && g_tProv < 0 && detailProv < 0 && !g_listView && dy < 0 && abs(dy) >= SWIPE_MIN) {
-        g_listView = true;                                                        // 上划主页 → 列表
+      if (g_tAxis == 'x' && abs(dx) >= SWIPE_MIN) swipePage(dx < 0 ? 1 : -1);   // 横滑:切端/翻会话
+      else if (g_tAxis == 'y' && abs(dy) >= SWIPE_MIN) {                          // 竖滑
+        if (dy < 0) { if (detailProv < 0 && !g_listView) g_listView = true; }     // 上滑:主页 → 列表
+        else {                                                                    // 下滑:返回上一级
+          if (detailProv >= 0) exitDetail();                                      // 详情 → 列表
+          else if (g_listView && g_scroll[page] <= 0) g_listView = false;         // 列表(顶部) → 主页
+        }
       } else if (g_tAxis == 0 && abs(dx) < TAP_MOVE && abs(dy) < TAP_MOVE) {    // 点击 -> 单/双击判定
         g_dbgTap++; g_dbgDelta = (int)(now - g_lastTapMs);
         if (now - g_lastTapMs < DBL_MS) { g_lastTapMs = 0; g_pendTapRow = -2; g_dbgDtap++;   // 双击 -> 退出详情/关列表
