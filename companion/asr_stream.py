@@ -63,7 +63,14 @@ def build_recognizer():
     )
 
 
-recognizer = build_recognizer()
+_recognizer = None
+
+
+def get_recognizer():
+    global _recognizer
+    if _recognizer is None:
+        _recognizer = build_recognizer()
+    return _recognizer
 
 
 # 注入式副作用封装(默认绑定真实 paste;测试传假实现)
@@ -118,7 +125,7 @@ def make_backend():
     if envcfg.select_engine() == "doubao":
         from codey.asr_doubao import DoubaoBackend          # 后续任务提供
         return DoubaoBackend()
-    return SherpaBackend(recognizer)
+    return SherpaBackend(get_recognizer())
 
 
 async def handle(ws, make_backend=make_backend, paster=None):
