@@ -1447,6 +1447,9 @@ void loop() {
   }
   // 不在主loop poll usage:fetchState 已搬进 netTask(异步,不阻塞渲染)
   updateAnim(now);
-  render();
-  delay(g_voice ? 2 : 16);   // voice screen runs faster for a smoother orb
+  // 触摸采样与重绘解耦:循环高速跑(每几 ms 采一次触摸,接住快速双击的抬手间隙),
+  // 重绘限到 ~30fps;语音叠层仍每帧重绘以保持粒子顺滑。
+  static uint32_t lastRender = 0;
+  if (g_voice || now - lastRender >= 33) { render(); lastRender = now; }
+  delay(g_voice ? 2 : 5);
 }
