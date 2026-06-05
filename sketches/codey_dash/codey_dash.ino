@@ -604,8 +604,8 @@ static const int ROW_H = 47, LIST_TOP = 116, LIST_BOT = 56;
 static int g_scroll[2] = { 0, 0 };                       // claude/codex 各自的滚动像素偏移
 
 // 触摸手势(466 屏内阈值)
-static const int  TAP_MOVE = 16, SWIPE_MIN = 56; static const uint32_t DBL_MS = 500;
-static int       g_dbgTap = 0, g_dbgDtap = 0;     // 临时:单击/双击计数(角标诊断)
+static const int  TAP_MOVE = 16, SWIPE_MIN = 56; static const uint32_t DBL_MS = 800;
+static int       g_dbgTap = 0, g_dbgDtap = 0, g_dbgDelta = 0;   // 临时:单击/双击计数 + 两击间隔(角标诊断)
 static bool     g_tDown = false; static int g_tx0 = 0, g_ty0 = 0; static int g_tStartScroll = 0;
 static char     g_tAxis = 0;                 // 0 未定 / 'x' / 'y'
 static int      g_tProv = -1;                // 竖拖作用的列表 provIdx(-1=非列表页)
@@ -627,7 +627,7 @@ static void render() {
   if (detailProv >= 0)      renderDetailPage();
   else if (g_listView)      renderListPage(page);
   else                      renderUsagePage(page);
-  { char b[24]; snprintf(b, sizeof(b), "t%d d%d", g_dbgTap, g_dbgDtap);   // 临时角标
+  { char b[32]; snprintf(b, sizeof(b), "t%d d%d %sms", g_dbgTap, g_dbgDtap, String(g_dbgDelta).c_str());   // 临时角标
     cv.setFont(&fonts::FreeMono9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_center);
     cv.setTextColor(c565(0x00ff88)); cv.drawString(b, CX, 454); }
   cv.pushSprite(0, 0);
@@ -1329,7 +1329,7 @@ void loop() {
       else if (g_tAxis == 'y' && g_tProv < 0 && detailProv < 0 && !g_listView && dy < 0 && abs(dy) >= SWIPE_MIN) {
         g_listView = true;                                                        // 上划主页 → 列表
       } else if (g_tAxis == 0 && abs(dx) < TAP_MOVE && abs(dy) < TAP_MOVE) {    // 点击 -> 单/双击判定
-        g_dbgTap++;
+        g_dbgTap++; g_dbgDelta = (int)(now - g_lastTapMs);
         if (now - g_lastTapMs < DBL_MS) { g_lastTapMs = 0; g_pendTapRow = -2; g_dbgDtap++;   // 双击 -> 退出详情/关列表
           if (detailProv >= 0) exitDetail(); else if (g_listView) g_listView = false; }
         else { g_lastTapMs = now;                                                // 记一次单击,延迟派发
