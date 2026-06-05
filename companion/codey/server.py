@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler
 
 from . import collect
 from .asr import WhisperManager
+from .chime import ChimeState
 from .state import build_state
 
 REFRESH_MS = 2000
@@ -17,6 +18,7 @@ class App:
         self.session_cache = {"claude": [], "codex": []}
         self.tok_rate = {"claude": {"prev": None, "val": 0}, "codex": {"prev": None, "val": 0}}
         self.lock = threading.Lock()
+        self.chime = ChimeState()
         self.whisper = WhisperManager()
 
     def start_background(self):
@@ -28,6 +30,7 @@ class App:
             try:
                 cache = collect.collect_sessions()
                 with self.lock:
+                    self.chime.update(prev_cache=self.session_cache, cur_cache=cache)
                     self.session_cache = cache
                     for pid in ("claude", "codex"):
                         total = sum(s.get("tokens_total", 0) for s in cache.get(pid, []))
@@ -41,7 +44,8 @@ class App:
     def state(self):
         with self.lock:
             cache, tok = self.session_cache, dict(self.tok_rate)
-        return build_state(cache, tok)
+            chime_event = self.chime.event
+        return build_state(cache, tok, chime_event)
 
 
 def make_handler(app):
