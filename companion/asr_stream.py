@@ -73,6 +73,17 @@ def get_recognizer():
     return _recognizer
 
 
+_punct = None
+
+
+def _get_punctuator():
+    global _punct
+    if _punct is None:
+        from codey.asr_punct import Punctuator
+        _punct = Punctuator()
+    return _punct
+
+
 # 注入式副作用封装(默认绑定真实 paste;测试传假实现)
 Paster = namedtuple("Paster", "paste enter clear enabled auto_enter")
 
@@ -89,6 +100,7 @@ class SherpaBackend:
         self.rec = rec
         self.stream = rec.create_stream()
         self.committed = ""
+        self.punct = None
 
     async def start(self):
         self.stream = self.rec.create_stream()
@@ -116,7 +128,10 @@ class SherpaBackend:
         self.stream.accept_waveform(16000, np.zeros(int(16000 * 0.4), dtype=np.float32))
         self.stream.input_finished()
         partial = self._decode()
-        return [{"text": (self.committed + partial).strip(), "final": True}]
+        text = (self.committed + partial).strip()
+        if self.punct:
+            text = self.punct.add(text)
+        return [{"text": text, "final": True}]
 
 
 def make_backend():
@@ -125,7 +140,9 @@ def make_backend():
     if envcfg.select_engine() == "doubao":
         from codey.asr_doubao import DoubaoBackend          # 后续任务提供
         return DoubaoBackend()
-    return SherpaBackend(get_recognizer())
+    b = SherpaBackend(get_recognizer())
+    b.punct = _get_punctuator()
+    return b
 
 
 async def handle(ws, make_backend=make_backend, paster=None):
