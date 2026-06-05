@@ -1,5 +1,7 @@
 # 固件会话监视页(Plan 2)Implementation Plan
 
+> **状态:✅ 已实现并合入分支 `feat/agent-session-monitor`(2026-06-05)。** 全部 Task 0–9 完成:`codey_ui.h` 主机单测全绿、`codey_dash` 编译 74% flash、companion `/codey/state` 端到端字段核对通过。**唯一未做:真机像素微调与触摸手感验证(需插上 StopWatch)。** 下方步骤 checkbox 保留为历史实现记录。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把 `sketches/codey_dash/codey_dash.ino` 从「两端账号额度 + 表盘」三页改造成消费 `/codey/state` 新契约(`sessions[]`/`active_count`/`agg`)的**实时 agent 会话监视器**:仪表盘首页 + Claude/Codex 会话列表页 + 单会话详情页,并新增 `M5.Touch` 滑动滚动 / 点按进详情。

@@ -1,12 +1,16 @@
-// codey_dash — Claude Code / Codex usage-monitor dashboard for the M5Stack StopWatch.
+// codey_dash — real-time Claude Code / Codex agent-session monitor for the M5Stack StopWatch.
 //
-// A faithful port of the "Codey 圆屏仪表盘" static design (milestone M1) + subtle
-// character idle-animation. Two pages (Claude orange / Codex green), switch with BtnA.
-// Per page: edge usage arc with ticks, header (dot+name · clock · battery), an animated
-// mascot, USAGE/WEEKLY 14-segment meters with live reset countdowns, a "N TO REVIEW"
-// pill, and page dots. Clock = on-board RTC, battery = real level. True-black background.
-//
-// Rendered to a full-screen PSRAM canvas for flicker-free animation.
+// Consumes /codey/state (companion, :8787) and shows live agent sessions across three pages,
+// switched with BtnA / shake / horizontal swipe:
+//   0  Dashboard — dual edge arc (Claude weekly% left / Codex right), two idle mascots framing
+//      the active-session count a·b, a cross-provider top-N session grid, and a dirty/tok-rate line.
+//   1  Claude session list — single weekly% arc + two rows per session (status·name·model·ctx%·tok·turn),
+//      vertically scrollable by touch drag.
+//   2  Codex session list — same, green.
+//   Detail — tap a session (or BtnA long-press): big animated mascot reflecting status + current
+//      task / git / context / subagents·ports; swipe or BtnA short-press to page through sessions.
+// Touch: drag=scroll, h-swipe=switch page/session, tap=open detail, double-tap=close.
+// True-black background, rendered to a full-screen PSRAM canvas for flicker-free animation.
 
 #include <M5Unified.h>
 #include <WiFi.h>           // STA 连接 + AP 热点 + scanNetworks
@@ -130,28 +134,6 @@ static void updateAnim(uint32_t now) {
   if (aBlink && now >= aBlinkEnd)   { aBlink = false; aBlinkNext = now + 1500 + random(2800); }
   if (now >= aGlanceNext) { aGlanceTarget = (random(201) - 100) / 100.0f; aGlanceNext = now + 1000 + random(1800); }
   aGlance += (aGlanceTarget - aGlance) * 0.15f;
-}
-
-// ---------- time helpers ----------
-static String fmtDur(long secs) {
-  if (secs < 0) secs = 0;
-  long d = secs / 86400, h = (secs % 86400) / 3600, m = (secs % 3600) / 60, s = secs % 60;
-  char b[16];
-  if (d > 0)      snprintf(b, sizeof(b), "%ldd", d);          // compact: 1d
-  else if (h > 0) snprintf(b, sizeof(b), "%ldh%02ldm", h, m); // 3h36m
-  else if (m > 0) snprintf(b, sizeof(b), "%ldm", m);          // 40m
-  else            snprintf(b, sizeof(b), "%lds", s);          // 30s
-  return String(b);
-}
-static long remain(long seed, long elapsed) { long r = seed - (elapsed % seed); return r == seed ? seed : r; }
-
-static const char* moodFor(int used, int pending, int battery) {
-  if (battery <= 12) return "sleepy";
-  if (pending > 0)   return "alert";
-  if (used >= 88)    return "worried";
-  if (used >= 65)    return "tired";
-  if (used >= 40)    return "focused";
-  return "happy";
 }
 
 // ---------- the edge usage arc — a clean ring drawn with overlapping circles ----------
@@ -602,13 +584,6 @@ static void render() {
   cv.pushSprite(0, 0);
 }
 
-// 占位实现(Task 4-7 替换)
-static void placeholder(const char* label) {
-  cv.fillSprite(c565(0x000000));
-  cv.setFont(&fonts::FreeSansBold18pt7b); cv.setTextDatum(middle_center);
-  cv.setTextColor(c565(0x8a9097));
-  cv.drawString(label, CX, CY);
-}
 static void renderDashboard() {
   // 双弧缓存在 g_ringA(仪表盘专用),仅在 pct 变化时重算
   static int rcA = -1, rcX = -1;
