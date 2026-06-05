@@ -618,30 +618,12 @@ static int maxScrollFor(int provIdx) {
   return m > 0 ? m : 0;
 }
 
-// ---------- 触摸调试 HUD(临时:确认触摸硬件是否响应)----------
-static int g_dbgTouchN = 0;                       // wasPressed 累计次数
-static int g_dbgTouchX = -1, g_dbgTouchY = -1;    // 最近触点
-static uint32_t g_dbgTouchMs = 0;                 // 最近触摸时刻
-static char g_dbgGest[16] = "-";                  // 最近手势(tap/dtap/swipeL/R)
-
-static void drawTouchHud() {
-  char b[48];
-  snprintf(b, sizeof(b), "C%d N%d %s", (int)M5.Touch.getCount(), g_dbgTouchN, g_dbgGest);
-  cv.setFont(&fonts::FreeMono9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_center);
-  cv.setTextColor(c565(0x00ff88)); cv.drawString(b, CX, 16);
-  if (millis() - g_dbgTouchMs < 900 && g_dbgTouchX >= 0) {   // 触点光圈(跟手)
-    cv.drawCircle(g_dbgTouchX, g_dbgTouchY, 16, c565(0x00ff88));
-    cv.fillSmoothCircle(g_dbgTouchX, g_dbgTouchY, 5, c565(0x00ff88));
-  }
-}
-
 // ---------- compose one page ----------
 static void render() {
   if (g_voice) { drawVoiceOverlay(); cv.pushSprite(0, 0); return; }
   if (detailProv >= 0)      renderDetailPage();
   else if (g_listView)      renderListPage(page);
   else                      renderUsagePage(page);
-  drawTouchHud();                                  // 临时:触摸诊断叠层
   cv.pushSprite(0, 0);
 }
 
@@ -1056,7 +1038,6 @@ void setup() {
   M5.Display.setRotation(0);
   Serial.begin(115200);
   Serial.println("codey_dash booted");
-  Serial.printf("[touch] enabled=%d  count=%d\n", M5.Touch.isEnabled(), M5.Touch.getCount());
 
   g_prefs.begin("codey", false);                  // persisted settings (brightness/volume/macip)
   g_bright = g_prefs.getUChar("bright", 255);
@@ -1321,12 +1302,9 @@ void loop() {
   // ---- 触摸手势(仅非设置/非语音态)----
   if (!g_inSettings && !g_voice) {
     auto td = M5.Touch.getDetail();
-    if (td.isPressed()) { g_dbgTouchX = td.x; g_dbgTouchY = td.y; g_dbgTouchMs = now; }   // 原始触点(独立于手势逻辑)
     if (td.wasPressed()) {
       g_tDown = true; g_tx0 = td.x; g_ty0 = td.y; g_tAxis = 0;
       g_tProv = curListProv(); g_tStartScroll = (g_tProv >= 0) ? g_scroll[g_tProv] : 0;
-      g_dbgTouchN++; snprintf(g_dbgGest, sizeof(g_dbgGest), "down");
-      Serial.printf("[touch] press %d,%d\n", td.x, td.y);
     } else if (g_tDown && td.isPressed()) {
       int dx = td.x - g_tx0, dy = td.y - g_ty0;
       if (!g_tAxis && (abs(dx) > TAP_MOVE || abs(dy) > TAP_MOVE)) g_tAxis = (abs(dx) > abs(dy)) ? 'x' : 'y';
@@ -1338,12 +1316,11 @@ void loop() {
       lastActiveMs = now;
     } else if (g_tDown && td.wasReleased()) {
       int dx = td.x - g_tx0, dy = td.y - g_ty0;
-      if (g_tAxis == 'x' && abs(dx) >= SWIPE_MIN) { snprintf(g_dbgGest, sizeof(g_dbgGest), "swipe%s", dx < 0 ? "L" : "R"); swipePage(dx < 0 ? 1 : -1); }   // 横滑
+      if (g_tAxis == 'x' && abs(dx) >= SWIPE_MIN) swipePage(dx < 0 ? 1 : -1);   // 横滑
       else if (g_tAxis == 'y' && g_tProv < 0 && detailProv < 0 && !g_listView && dy < 0 && abs(dy) >= SWIPE_MIN) {
-        snprintf(g_dbgGest, sizeof(g_dbgGest), "swipeU"); g_listView = true;      // 上划主页 → 列表
+        g_listView = true;                                                        // 上划主页 → 列表
       } else if (g_tAxis == 0 && abs(dx) < TAP_MOVE && abs(dy) < TAP_MOVE) {    // 点击 -> 单/双击判定
         if (now - g_lastTapMs < DBL_MS) { g_lastTapMs = 0; g_pendTapRow = -2;   // 双击 -> 退出详情/关列表
-          snprintf(g_dbgGest, sizeof(g_dbgGest), "dtap");
           if (detailProv >= 0) exitDetail(); else if (g_listView) g_listView = false; }
         else { g_lastTapMs = now;                                                // 记一次单击,延迟派发
           g_pendTapMs = now; g_pendTapRow = (g_tProv >= 0) ? rowHitAt(g_tProv, g_ty0) : -1; }
@@ -1351,7 +1328,7 @@ void loop() {
       g_tDown = false; g_tAxis = 0; g_tProv = -1; lastActiveMs = now;
     }
     // 单击延迟派发(等过双击窗口确认不是双击)
-    if (g_pendTapRow != -2 && now - g_pendTapMs >= DBL_MS) { snprintf(g_dbgGest, sizeof(g_dbgGest), "tap%d", g_pendTapRow); doTap(g_pendTapRow); g_pendTapRow = -2; }
+    if (g_pendTapRow != -2 && now - g_pendTapMs >= DBL_MS) { doTap(g_pendTapRow); g_pendTapRow = -2; }
   } else {                                   // 进入设置/语音态:清手势残留(防退出后用旧坐标误滚动)
     g_tDown = false; g_tAxis = 0; g_tProv = -1; g_pendTapRow = -2;
   }
