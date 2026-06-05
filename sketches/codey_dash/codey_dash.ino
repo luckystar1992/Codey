@@ -92,8 +92,8 @@ static float    g_noiseFloor = 0.06f;// adaptive VAD noise floor
 static WebSocketsClient g_ws;        // ONLY touched by netTask
 static volatile bool g_wsConn = false;
 static const char*    MAC_HOSTNAME    = "testnull-2";
-static const char*    MAC_FALLBACK_IP = "192.168.1.29";
-static String         g_macIp = "192.168.1.29";   // netTask only
+static const char*    MAC_FALLBACK_IP = "10.100.0.89";
+static String         g_macIp = "10.100.0.89";   // netTask only
 static char           g_manualMac[24] = {0};      // 手填 Companion IP(NVS;门户写/netTask读)
 static const uint16_t ASR_PORT = 8788;
 static char     g_model[48] = {0};   // Claude 模型名(头像下),netTask 写 主loop 读
@@ -116,7 +116,7 @@ static bool     g_dim = false;       // screen dimmed
 static float    g_accMag = 1.0f;     // last accel magnitude (motion detection)
 static uint32_t g_lastShake = 0;     // shake-gesture debounce
 // ---- live data from the Companion ----
-static String g_companionUrl = "http://192.168.1.29:8787/codey/state";   // rebuilt from g_macIp at boot
+static String g_companionUrl = "http://10.100.0.89:8787/codey/state";   // rebuilt from g_macIp at boot
 static volatile bool g_haveData = false;
 static volatile bool g_companionOk = false;   // usage 接口(Companion)是否可达 -> 尾灯 绿/红
 static bool     g_stale = false;
