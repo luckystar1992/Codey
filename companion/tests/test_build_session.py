@@ -14,8 +14,9 @@ class TestBuildSession(unittest.TestCase):
         s = build_claude_session(
             session_id="sid1", cwd="/Users/zyc/code/Codey", started_at=1780000000000,
             parsed=parsed, status="executing", git={"branch": "main", "added": 3, "modified": 12},
-            ports=[3000, 5173], subagents=2, effort="high")
+            ports=[3000, 5173], subagents=2, effort="high", memory_kb=131072)
         self.assertEqual(s["id"], "sid1")
+        self.assertEqual(s["memory"], 131072)
         self.assertEqual(s["name"], "Codey")
         self.assertEqual(s["status"], "executing")
         self.assertEqual(s["model"], "claude-opus-4-8")

@@ -1,7 +1,7 @@
 import unittest
 
-from codey.collect import (aggregate_provider, has_active_descendant, ports_for_tree,
-                          tokens_per_min)
+from codey.collect import (aggregate_provider, has_active_descendant, memory_for_tree,
+                          ports_for_tree, tokens_per_min)
 
 
 class TestCollect(unittest.TestCase):
@@ -17,6 +17,14 @@ class TestCollect(unittest.TestCase):
         ports = {100: [5173], 200: [3000, 5173]}
         self.assertEqual(ports_for_tree(pmap, ports, 100), [3000, 5173])
         self.assertEqual(ports_for_tree(pmap, ports, 999), [])
+
+    def test_memory_for_tree(self):
+        pmap = {100: {"pid": 100, "ppid": 1, "rss_kb": 50000},
+                200: {"pid": 200, "ppid": 100, "rss_kb": 30000},
+                300: {"pid": 300, "ppid": 200, "rss_kb": 20000}}
+        self.assertEqual(memory_for_tree(pmap, 100), 100000)   # 自身 + 全部后代
+        self.assertEqual(memory_for_tree(pmap, 300), 20000)
+        self.assertEqual(memory_for_tree(pmap, 999), 0)
 
     def test_aggregate_provider(self):
         sessions = [

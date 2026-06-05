@@ -44,8 +44,16 @@ int main() {
   fmtTokens(1500, b, sizeof(b));       assert(!strcmp(b, "1.5K"));
   fmtTokens(12345, b, sizeof(b));      assert(!strcmp(b, "1.2W"));
   fmtTokens(1234567, b, sizeof(b));    assert(!strcmp(b, "123W"));
+  fmtTokens(123456789, b, sizeof(b));  assert(!strcmp(b, "1.23M"));     // 亿
+  fmtTokens(356700000, b, sizeof(b));  assert(!strcmp(b, "3.57M"));
   fmtTokens(1000000000L, b, sizeof(b)); assert(!strcmp(b, "1.00B"));
   fmtTokens(2345678901L, b, sizeof(b)); assert(!strcmp(b, "2.35B"));
+
+  // ---- fmtMem: KB -> M/G ----
+  fmtMem(0, b, sizeof(b));        assert(!strcmp(b, "-"));
+  fmtMem(512, b, sizeof(b));      assert(!strcmp(b, "512K"));
+  fmtMem(131072, b, sizeof(b));   assert(!strcmp(b, "128M"));
+  fmtMem(2097152, b, sizeof(b));  assert(!strcmp(b, "2.0G"));
 
   // ---- fmtElapsed ----
   fmtElapsed(40, b, sizeof(b));        assert(!strcmp(b, "0m"));

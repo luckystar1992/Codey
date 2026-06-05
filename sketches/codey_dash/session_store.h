@@ -21,6 +21,7 @@ struct Sess {
   int     ports[MAX_PORTS];
   int     nports;
   long    startedAt;      // epoch seconds
+  long    memKb;          // 进程树常驻内存 KB(0=未知)
 };
 
 struct Prov {

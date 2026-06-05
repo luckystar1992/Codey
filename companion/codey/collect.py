@@ -29,6 +29,16 @@ def ports_for_tree(pmap, ports_map, pid):
     return sorted(s)
 
 
+def memory_for_tree(pmap, pid):
+    """会话进程 + 全部后代的常驻内存(RSS)合计,单位 KB。"""
+    total = 0
+    for d in [pid, *descendants_of(pmap, pid)]:
+        info = pmap.get(d)
+        if info:
+            total += int(info.get("rss_kb", 0))
+    return total
+
+
 def aggregate_provider(sessions):
     return {
         "active_count": sum(1 for s in sessions if s["status"] in ("executing", "thinking")),
@@ -69,7 +79,8 @@ def collect_sessions():
         claude.append(build_claude_session(
             session_id=d["session_id"], cwd=d["cwd"], started_at=d["started_at"], parsed=parsed,
             status=status, git=git, ports=ports_for_tree(pmap, ports_map, d["pid"]),
-            subagents=discover.count_subagents(d["subagents_dir"]), effort=""))
+            subagents=discover.count_subagents(d["subagents_dir"]), effort="",
+            memory_kb=memory_for_tree(pmap, d["pid"])))
 
     codex = []
     seen = set()

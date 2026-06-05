@@ -696,7 +696,7 @@ static void renderListPage(int provIdx) {
   }
 
   // 表格列(左对齐,贴合圆屏可用宽);全 ASCII → FreeMono 无方框
-  const int colDot = 62, colSt = 74, colModel = 128, colCtx = 224, colTok = 266, colTurn = 360;
+  const int colDot = 46, colSt = 58, colModel = 112, colCtx = 204, colTok = 242, colMem = 300, colTurn = 358;
 
   // 表头(固定,不滚动)
   cv.setFont(&fonts::FreeMono9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_left);
@@ -705,8 +705,9 @@ static void renderListPage(int provIdx) {
   cv.drawString("Model", colModel, 78);
   cv.drawString("Ctx",   colCtx,   78);
   cv.drawString("Tok",   colTok,   78);
+  cv.drawString("Mem",   colMem,   78);
   cv.drawString("Turn",  colTurn,  78);
-  cv.drawFastHLine(52, 90, SIZE - 104, c565(0x2a2c31));
+  cv.drawFastHLine(46, 90, SIZE - 92, c565(0x2a2c31));
 
   // 滚动行(裁剪)
   int sc = g_scroll[provIdx];
@@ -726,12 +727,15 @@ static void renderListPage(int provIdx) {
     else { cv.drawCircle(colDot, my, 5, dc); cv.drawCircle(colDot, my, 4, dc); }   // 空心环=其余
     cv.setFont(&fonts::FreeMono9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_left);
     cv.setTextColor(dc);              cv.drawString(statusShort(st), colSt, my);
-    char md[16]; modelShort(s.model, md, sizeof(md));
+    char md[16]; modelShort(s.model, md, sizeof(md));       // 紧凑:去空格(Opus 4.8 -> Opus4.8)
+    for (char* a = md, *b = md; ; ++a) { if (*a != ' ') *b++ = *a; if (!*a) break; }
     cv.setTextColor(c565(0x8a8d94));  cv.drawString(md, colModel, my);
     char cb[8]; snprintf(cb, sizeof(cb), "%d%%", s.ctxPct);
     cv.setTextColor(c565(ctxColor(s.ctxPct))); cv.drawString(cb, colCtx, my);
     char tb[12]; fmtTokens(s.tokTotal, tb, sizeof(tb));
     cv.setTextColor(c565(0xe6e8ec));  cv.drawString(tb, colTok, my);
+    char mb[10]; fmtMem(s.memKb, mb, sizeof(mb));
+    cv.setTextColor(c565(0x8a8d94));  cv.drawString(mb, colMem, my);
     char rb[8]; snprintf(rb, sizeof(rb), "%d", s.turn);
     cv.setTextColor(c565(0x8a8d94));  cv.drawString(rb, colTurn, my);
   }
@@ -1152,6 +1156,7 @@ static void parseSession(JsonObject so, Sess& s) {
   s.modified = so["git"]["modified"] | 0;
   s.subagents= so["subagents"]      | 0;
   s.startedAt= so["started_at"]     | 0L;
+  s.memKb    = so["memory"]         | 0L;
   s.nports = 0;
   for (JsonVariant pv : so["ports"].as<JsonArray>()) { if (s.nports < MAX_PORTS) s.ports[s.nports++] = pv.as<int>(); }
 }

@@ -61,13 +61,22 @@ static inline void fmtK(long n, char* out, size_t outSz) {
   }
 }
 
-// 中文数量级:K=千 / W=万 / B=十亿(B 保留 2 位小数,W 大于百时去小数)
+// 中文数量级:K=千 / W=万 / M=亿 / B=十亿(M、B 保留 2 位小数;W 大于百时去小数)
 static inline void fmtTokens(long n, char* out, size_t outSz) {
   if (n < 0) n = 0;
-  if (n >= 1000000000L) { snprintf(out, outSz, "%.2fB", n / 1000000000.0); }
-  else if (n >= 10000)  { double w = n / 10000.0; snprintf(out, outSz, w >= 100 ? "%.0fW" : "%.1fW", w); }
-  else if (n >= 1000)   { snprintf(out, outSz, "%.1fK", n / 1000.0); }
-  else                  { snprintf(out, outSz, "%ld", n); }
+  if (n >= 1000000000L)     { snprintf(out, outSz, "%.2fB", n / 1000000000.0); }
+  else if (n >= 100000000L) { snprintf(out, outSz, "%.2fM", n / 100000000.0); }   // 亿
+  else if (n >= 10000)      { double w = n / 10000.0; snprintf(out, outSz, w >= 100 ? "%.0fW" : "%.1fW", w); }
+  else if (n >= 1000)       { snprintf(out, outSz, "%.1fK", n / 1000.0); }
+  else                      { snprintf(out, outSz, "%ld", n); }
+}
+
+// 内存:入参 KB → M(兆) / G(吉);<=0 显示 "-"
+static inline void fmtMem(long kb, char* out, size_t outSz) {
+  if (kb <= 0)             { snprintf(out, outSz, "-"); }
+  else if (kb >= 1048576)  { snprintf(out, outSz, "%.1fG", kb / 1048576.0); }
+  else if (kb >= 1024)     { snprintf(out, outSz, "%ldM", kb / 1024); }
+  else                     { snprintf(out, outSz, "%ldK", kb); }
 }
 
 static inline void fmtElapsed(long secs, char* out, size_t outSz) {

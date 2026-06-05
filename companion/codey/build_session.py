@@ -4,7 +4,7 @@ from .util import clamp_pct, project_name
 
 
 def build_claude_session(*, session_id, cwd, started_at, parsed, status,
-                         git, ports, subagents, effort):
+                         git, ports, subagents, effort, memory_kb=0):
     cw = context_window_for(parsed.get("model"), parsed.get("max_context_tokens"))
     ctx_tok = parsed.get("last_context_tokens") or 0
     return {
@@ -24,10 +24,11 @@ def build_claude_session(*, session_id, cwd, started_at, parsed, status,
         "ports": ports or [],
         "started_at": (started_at or 0) // 1000,
         "effort": effort or "",
+        "memory": memory_kb or 0,            # 进程树常驻内存(KB);0=未知
     }
 
 
-def build_codex_session(*, parsed, started_at, status, git, ports, subagents):
+def build_codex_session(*, parsed, started_at, status, git, ports, subagents, memory_kb=0):
     cw = parsed.get("context_window") or 272000
     ctx_tok = parsed.get("last_context_tokens") or 0
     return {
@@ -47,4 +48,5 @@ def build_codex_session(*, parsed, started_at, status, git, ports, subagents):
         "ports": ports or [],
         "started_at": (started_at or 0) // 1000,
         "effort": parsed.get("effort") or "",
+        "memory": memory_kb or 0,
     }
