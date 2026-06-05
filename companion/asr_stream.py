@@ -19,6 +19,7 @@ import glob
 import json
 import os
 import sys
+from collections import namedtuple
 
 import numpy as np
 import sherpa_onnx
@@ -65,37 +66,88 @@ def build_recognizer():
 recognizer = build_recognizer()
 
 
-async def handle(ws):
-    stream = recognizer.create_stream()
-    committed = ""        # text from finalized (endpointed) segments this session
+# 注入式副作用封装(默认绑定真实 paste;测试传假实现)
+Paster = namedtuple("Paster", "paste enter clear enabled auto_enter")
+
+
+def default_paster():
+    from codey import paste as _p, envcfg as _c
+    return Paster(paste=_p.paste_to_active_window, enter=_p.press_enter, clear=_p.clear_input,
+                  enabled=_c.paste_enabled(), auto_enter=_c.auto_enter())
+
+
+class SherpaBackend:
+    """本地 sherpa 流式后端:行为与原 handle 等价(每块 partial + endpoint 段 final)。"""
+    def __init__(self, rec):
+        self.rec = rec
+        self.stream = rec.create_stream()
+        self.committed = ""
+
+    async def start(self):
+        self.stream = self.rec.create_stream()
+        self.committed = ""
+
+    def _decode(self):
+        while self.rec.is_ready(self.stream):
+            self.rec.decode_stream(self.stream)
+        return self.rec.get_result(self.stream).strip()
+
+    async def accept(self, pcm):
+        samples = np.frombuffer(bytes(pcm), dtype=np.int16).astype(np.float32) / 32768.0
+        self.stream.accept_waveform(16000, samples)
+        partial = self._decode()
+        full = (self.committed + partial).strip()
+        out = [{"text": full, "final": False}]
+        if self.rec.is_endpoint(self.stream):
+            if partial:
+                self.committed = full
+                out.append({"text": self.committed, "final": True})
+            self.rec.reset(self.stream)
+        return out
+
+    async def stop(self):
+        self.stream.accept_waveform(16000, np.zeros(int(16000 * 0.4), dtype=np.float32))
+        self.stream.input_finished()
+        partial = self._decode()
+        return [{"text": (self.committed + partial).strip(), "final": True}]
+
+
+def make_backend():
+    """按 env 选引擎。doubao 在后续任务接入;此处先只有 sherpa。"""
+    from codey import envcfg
+    if envcfg.select_engine() == "doubao":
+        from codey.asr_doubao import DoubaoBackend          # 后续任务提供
+        return DoubaoBackend()
+    return SherpaBackend(recognizer)
+
+
+async def handle(ws, make_backend=make_backend, paster=None):
+    if paster is None:
+        paster = default_paster()
+    backend = None
     last_sent = None
 
     async def send(text, final):
         nonlocal last_sent
-        text = text.strip()
+        text = (text or "").strip()
         if final or text != last_sent:
             await ws.send(json.dumps({"type": "stt", "text": text, "final": final}, ensure_ascii=False))
             last_sent = text
 
-    def decode():
-        while recognizer.is_ready(stream):
-            recognizer.decode_stream(stream)
-        return recognizer.get_result(stream).strip()
+    async def emit(events):
+        final_text = None
+        for ev in events:
+            await send(ev["text"], ev["final"])
+            if ev["final"] and ev["text"]:
+                final_text = ev["text"]
+        return final_text
 
-    print("[asr] client connected", flush=True)
     try:
         async for msg in ws:
             if isinstance(msg, (bytes, bytearray)):
-                samples = np.frombuffer(bytes(msg), dtype=np.int16).astype(np.float32) / 32768.0
-                stream.accept_waveform(16000, samples)
-                partial = decode()
-                full = (committed + partial).strip()
-                await send(full, False)
-                if recognizer.is_endpoint(stream):
-                    if partial:
-                        committed = (committed + partial).strip()
-                        await send(committed, True)
-                    recognizer.reset(stream)
+                if backend is None:
+                    backend = make_backend(); await backend.start()
+                await emit(await backend.accept(msg))
             else:
                 try:
                     data = json.loads(msg)
@@ -108,24 +160,32 @@ async def handle(ws):
                         "audio_params": {"format": "pcm", "sample_rate": 16000, "channels": 1},
                     }))
                 elif t == "listen" and data.get("state") == "start":
-                    stream = recognizer.create_stream(); committed = ""; last_sent = None
-                    print("[asr] listen start", flush=True)
+                    backend = make_backend(); await backend.start()
+                    last_sent = None
                 elif t == "listen" and data.get("state") == "stop":
-                    stream.accept_waveform(16000, np.zeros(int(16000 * 0.4), dtype=np.float32))  # flush tail
-                    stream.input_finished()
-                    partial = decode()
-                    final = (committed + partial).strip()
-                    await send(final, True)
-                    print(f"[asr] final: {final!r}", flush=True)
+                    if backend is None:
+                        backend = make_backend(); await backend.start()
+                    final_text = await emit(await backend.stop())
+                    backend = None
+                    if final_text and paster.enabled:
+                        paster.paste(final_text)
+                        if paster.auto_enter:
+                            paster.enter()
+                elif t == "submit":
+                    if paster.enabled:
+                        paster.enter()
+                elif t == "clear":
+                    if paster.enabled:
+                        paster.clear()
     except websockets.ConnectionClosed:
         pass
-    finally:
-        print("[asr] client closed", flush=True)
 
 
 async def main():
-    print(f"Codey streaming ASR -> ws://0.0.0.0:{PORT}  (sherpa-onnx)", flush=True)
-    async with websockets.serve(handle, "0.0.0.0", PORT, max_size=None):
+    from codey import envcfg
+    envcfg.load_dotenv()
+    print(f"Codey streaming ASR -> ws://0.0.0.0:{PORT}  (engine={envcfg.select_engine()})", flush=True)
+    async with websockets.serve(lambda ws: handle(ws), "0.0.0.0", PORT, max_size=None):
         await asyncio.Future()
 
 
