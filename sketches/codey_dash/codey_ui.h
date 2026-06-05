@@ -61,6 +61,15 @@ static inline void fmtK(long n, char* out, size_t outSz) {
   }
 }
 
+// 中文数量级:K=千 / W=万 / B=十亿(B 保留 2 位小数,W 大于百时去小数)
+static inline void fmtTokens(long n, char* out, size_t outSz) {
+  if (n < 0) n = 0;
+  if (n >= 1000000000L) { snprintf(out, outSz, "%.2fB", n / 1000000000.0); }
+  else if (n >= 10000)  { double w = n / 10000.0; snprintf(out, outSz, w >= 100 ? "%.0fW" : "%.1fW", w); }
+  else if (n >= 1000)   { snprintf(out, outSz, "%.1fK", n / 1000.0); }
+  else                  { snprintf(out, outSz, "%ld", n); }
+}
+
 static inline void fmtElapsed(long secs, char* out, size_t outSz) {
   if (secs < 0) secs = 0;
   long h = secs / 3600, m = (secs % 3600) / 60;

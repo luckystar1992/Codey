@@ -750,21 +750,20 @@ static void renderDetailPage() {
   cv.fillSprite(c565(0x000000));
   drawArc(cv, color, s.ctxPct);                       // 边缘弧 = ctx%
 
-  // 头部:provider 点 + 名称 · PROVIDER
-  char nm[40]; truncCp(s.name, 12, nm, sizeof(nm));
-  char title[56]; snprintf(title, sizeof(title), "%s · %s", nm, detailProv == 0 ? "CLAUDE" : "CODEX");
+  // 头部:provider 色点 + 会话名称(只显示名称,不再带 · CLAUDE)
+  char nm[40]; truncCp(s.name, 18, nm, sizeof(nm));
   cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextSize(1); cv.setTextDatum(middle_center);
-  int tWid = cv.textWidth(title);
+  int tWid = cv.textWidth(nm);
   cv.fillCircle(CX - tWid / 2 - 11, 44, 4, c565(color));
-  cv.setTextColor(c565(0xcfd2d8)); cv.drawString(title, CX, 44);
+  cv.setTextColor(c565(0xcfd2d8)); cv.drawString(nm, CX, 44);
 
-  // 第二行:model · 已运行时长
+  // 第二行:model · 已运行时长(efontCN 字体能渲染 ·,不再是方框)
   long nowE = time(nullptr); bool epochOK = nowE > 1700000000L;
   long elapsed = (epochOK && s.startedAt > 0) ? (nowE - s.startedAt) : 0;
   char md[24]; modelShort(s.model, md, sizeof(md));
   char el[16]; fmtElapsed(elapsed, el, sizeof(el));
   char l2[48]; snprintf(l2, sizeof(l2), "%s · %s", md, el);
-  cv.setFont(&fonts::FreeMono9pt7b); cv.setTextDatum(middle_center);
+  cv.setFont(&fonts::efontCN_16); cv.setTextDatum(middle_center);
   cv.setTextColor(c565(0x7d828a)); cv.drawString(l2, CX, 68);
 
   // 缩小版的首页同款动画机器人 + 状态词
@@ -779,24 +778,36 @@ static void renderDetailPage() {
   // 三宫格:ctx / turn / tokens
   char ctxv[8]; snprintf(ctxv, sizeof(ctxv), "%d%%", s.ctxPct);
   char turnv[8]; snprintf(turnv, sizeof(turnv), "%d", s.turn);
-  char tokv[12]; fmtK(s.tokTotal, tokv, sizeof(tokv));
+  char tokv[12]; fmtTokens(s.tokTotal, tokv, sizeof(tokv));   // K千/W万/B十亿
   const int tw = 96, th = 50, gap = 10, ty = 228;
   drawStatTile(CX - tw - gap, ty, tw, th, "CTX",    ctxv,  color);
   drawStatTile(CX,            ty, tw, th, "TURN",   turnv, color);
   drawStatTile(CX + tw + gap, ty, tw, th, "TOKENS", tokv,  color);
 
-  // 任务行 + git/subagents 行(居中,裁剪防溢出圆屏)
+  // 任务/agent 名称(efontCN 可渲染中文与 ·;超宽 → 跑马灯循环)
   char buf[96];
-  cv.setFont(&fonts::FreeMono9pt7b); cv.setTextDatum(middle_center);
-  if (s.task[0]) { cv.setTextColor(c565(0xe6e8ec)); snprintf(buf, sizeof(buf), "* %s", s.task); }
-  else           { cv.setTextColor(c565(0x6f757d)); snprintf(buf, sizeof(buf), "* idle"); }
-  cv.setClipRect(48, 278, SIZE - 96, 20); cv.drawString(buf, CX, 288); cv.clearClipRect();
+  if (s.task[0]) snprintf(buf, sizeof(buf), "* %s", s.task);
+  else           snprintf(buf, sizeof(buf), "* idle");
+  cv.setFont(&fonts::efontCN_16); cv.setTextColor(c565(s.task[0] ? 0xe6e8ec : 0x6f757d));
+  const int taskWin = SIZE - 120, taskY = 288;            // 任务行可视窗 ~346px
+  int taskW = cv.textWidth(buf);
+  if (taskW <= taskWin) {                                 // 不超宽:居中
+    cv.setTextDatum(middle_center); cv.drawString(buf, CX, taskY);
+  } else {                                                // 超宽:跑马灯
+    int winL = CX - taskWin / 2, scrollW = taskW + 48;
+    int off = (int)((millis() / 40) % (uint32_t)scrollW);
+    cv.setClipRect(winL, taskY - 11, taskWin, 22); cv.setTextDatum(middle_left);
+    cv.drawString(buf, winL - off, taskY);
+    cv.drawString(buf, winL - off + scrollW, taskY);      // 第二份 → 无缝循环
+    cv.clearClipRect();
+  }
 
+  // git / subagents / ports 行(efontCN 渲染 ·)
   int n = snprintf(buf, sizeof(buf), "git %s +%d ~%d", s.branch[0] ? s.branch : "-", s.added, s.modified);
   if (s.subagents > 0) n += snprintf(buf + n, sizeof(buf) - n, " · %dsub", s.subagents);
   if (s.nports > 0)    snprintf(buf + n, sizeof(buf) - n, " · :%d", s.ports[0]);
-  cv.setTextColor(c565(0xc3c7cd));
-  cv.setClipRect(48, 302, SIZE - 96, 20); cv.drawString(buf, CX, 312); cv.clearClipRect();
+  cv.setFont(&fonts::efontCN_16); cv.setTextColor(c565(0xc3c7cd)); cv.setTextDatum(middle_center);
+  cv.setClipRect(48, 302, SIZE - 96, 22); cv.drawString(buf, CX, 312); cv.clearClipRect();
 
   // 底部:位置点 + i/N
   int nd = p.nsess > 9 ? 9 : p.nsess;

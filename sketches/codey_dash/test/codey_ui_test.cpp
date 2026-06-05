@@ -39,6 +39,14 @@ int main() {
   fmtK(1234567, b, sizeof(b)); assert(!strcmp(b, "1235k"));
   fmtK(0, b, sizeof(b));       assert(!strcmp(b, "0"));
 
+  // ---- fmtTokens: K千 / W万 / B十亿 ----
+  fmtTokens(500, b, sizeof(b));        assert(!strcmp(b, "500"));
+  fmtTokens(1500, b, sizeof(b));       assert(!strcmp(b, "1.5K"));
+  fmtTokens(12345, b, sizeof(b));      assert(!strcmp(b, "1.2W"));
+  fmtTokens(1234567, b, sizeof(b));    assert(!strcmp(b, "123W"));
+  fmtTokens(1000000000L, b, sizeof(b)); assert(!strcmp(b, "1.00B"));
+  fmtTokens(2345678901L, b, sizeof(b)); assert(!strcmp(b, "2.35B"));
+
   // ---- fmtElapsed ----
   fmtElapsed(40, b, sizeof(b));        assert(!strcmp(b, "0m"));
   fmtElapsed(40*60, b, sizeof(b));     assert(!strcmp(b, "40m"));
