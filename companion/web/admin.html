@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Codey Companion · 管理台</title>
+<style>
+  :root{--bg:#0c0d10;--panel:#15171b;--ink:#e6e8ec;--dim:#8b9097;--green:#3ccb7f;--line:#262a31;}
+  *{box-sizing:border-box} html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .top{padding:12px 18px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center}
+  .top b{font-size:15px} .top .dot{width:8px;height:8px;border-radius:50%;background:var(--green)}
+  .top .meta{color:var(--dim);font-size:12px}
+  .wrap{display:flex;gap:18px;padding:18px;flex-wrap:wrap}
+  .mirror{flex:0 0 auto} .mirror iframe{width:480px;height:520px;border:0;border-radius:14px;background:#000}
+  .hist{flex:1 1 360px;min-width:320px;background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:14px;max-height:560px;overflow:auto}
+  .hist h2{margin:0 0 10px;font-size:13px;color:var(--dim);letter-spacing:1px}
+  .row{padding:8px 6px;border-bottom:1px solid var(--line)}
+  .row .t{font-size:11px;color:var(--dim)} .row .x{font-size:14px;margin-top:3px;white-space:pre-wrap;word-break:break-word}
+  .row .e{font-size:10px;color:#6f757d;margin-left:8px}
+  .empty{color:#6f757d;font-size:13px;padding:10px}
+</style></head><body>
+  <div class="top"><span class="dot" id="dot"></span><b>Codey Companion 管理台</b>
+    <span class="meta" id="meta"></span></div>
+  <div class="wrap">
+    <div class="mirror"><iframe src="/sim?live=1" title="device"></iframe></div>
+    <div class="hist"><h2>ASR 识别历史</h2><div id="list"><div class="empty">加载中…</div></div></div>
+  </div>
+<script>
+function esc(s){return (s||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));}
+async function poll(){
+  try{
+    const r=await fetch('/codey/history?n=100'); const j=await r.json();
+    const list=document.getElementById('list'); const es=(j.entries||[]).slice().reverse();
+    document.getElementById('dot').style.background='#3ccb7f';
+    document.getElementById('meta').textContent=es.length+' 条 · 自动刷新';
+    list.innerHTML = es.length ? es.map(e=>`<div class="row">
+      <div class="t">${esc((e.time||'').replace('T',' '))}<span class="e">${esc(e.engine||'')}${e.pasted?' · pasted':''}</span></div>
+      <div class="x">${esc(e.text||'')}</div></div>`).join('') : '<div class="empty">暂无识别记录</div>';
+  }catch(err){ document.getElementById('dot').style.background='#ff5d5d';
+    document.getElementById('meta').textContent='连接失败:'+err.message; }
+}
+poll(); setInterval(poll, 2000);
+</script></body></html>

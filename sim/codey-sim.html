@@ -427,6 +427,18 @@ document.getElementById('liveBtn').addEventListener('click',async()=>{
 });
 
 render();
+
+// 作为设备镜像被 companion 提供(?live=1 或 http 同源)时,自动轮询 /codey/state 实时刷新
+if (new URLSearchParams(location.search).get('live') === '1' || location.protocol.startsWith('http')) {
+  const _liveTick = async () => {
+    try {
+      const r = await fetch('/codey/state', {cache:'no-store'});
+      const j = await r.json();
+      if (j && j.providers) { STATE = j; scroll.claude=0; scroll.codex=0; render(); }
+    } catch (e) {}
+  };
+  _liveTick(); setInterval(_liveTick, 2000);
+}
 </script>
 </body>
 </html>
