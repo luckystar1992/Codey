@@ -9,8 +9,11 @@
 """
 import os
 import socket
+import threading
 from http.server import ThreadingHTTPServer
 
+import asr_stream
+from codey import envcfg
 from codey.server import App, make_handler
 
 PORT = int(os.environ.get("CODEY_PORT") or 8787)
@@ -30,6 +33,8 @@ def lan_ip():
 def main():
     app = App()
     app.start_background()
+    threading.Thread(target=asr_stream.run_server, daemon=True).start()   # ASR WS :8788(同进程)
+    print(f"Codey ASR       -> ws://{lan_ip()}:8788  (engine={envcfg.select_engine()})")
     httpd = ThreadingHTTPServer(("0.0.0.0", PORT), make_handler(app))
     print(f"Codey companion -> http://{lan_ip()}:{PORT}/codey/state  (port {PORT})")
     try:
