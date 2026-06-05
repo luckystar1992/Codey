@@ -219,6 +219,9 @@ async def handle(ws, make_backend=make_backend, paster=None):
                                 paster.enter()
                         except Exception as e:
                             print(f"[asr] paste error: {e}", flush=True)
+                    if final_text:
+                        from codey import asr_history, envcfg as _ec
+                        asr_history.append(final_text, engine=_ec.select_engine(), pasted=paster.enabled)
                 elif t == "submit":
                     if paster.enabled:
                         try: paster.enter()
@@ -239,6 +242,11 @@ async def main():
     print(f"Codey streaming ASR -> ws://0.0.0.0:{PORT}  (engine={envcfg.select_engine()})", flush=True)
     async with websockets.serve(lambda ws: handle(ws), "0.0.0.0", PORT, max_size=None):
         await asyncio.Future()
+
+
+def run_server():
+    """供 codey_companion 在后台线程里启动 ASR WS 服务(各自 asyncio loop)。"""
+    asyncio.run(main())
 
 
 if __name__ == "__main__":
