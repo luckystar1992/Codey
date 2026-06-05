@@ -1,5 +1,7 @@
 # 语音输入桥 · Companion(Plan A)Implementation Plan
 
+> **状态:✅ 已实现于分支 `feat/voice-input-bridge`(2026-06-05)。** Task 1–9 全部完成,companion 57 测试全绿。终审后加固:`handle()` 中途断连(无 listen:stop)经 `finally` 关闭在用后端(`DoubaoBackend.close→sess.close`,防上游 ws/reader 泄漏);accept/stop/paste 异常逐段捕获,单帧/粘贴失败不拖垮连接。**唯一未做:豆包活路径与粘贴需真机/真 key 集成验证(见末尾"Must verify live")。** chime 播放 + BtnB 多击 = Plan B(固件)。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把姊妹项目 `meme` 的语音识别周边能力迁进 Codey 的 **companion(Python)** 侧:① 转写结果**自动粘贴**进当前聚焦窗口 + submit(回车)/clear(清空)控制;② **豆包云端流式 ASR** 作为可选引擎(本地 sherpa 默认,断网/无 key 回落本地);③ 标点/ITN(豆包自带,sherpa 可选本地标点);④ 任务**完成检测**(供固件 chime,Plan B 播放)。本计划只动 companion,**固件零改动即可让语音真正可用**(粘贴在 Mac 侧发生)。

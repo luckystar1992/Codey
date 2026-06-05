@@ -133,6 +133,9 @@ class SherpaBackend:
             text = self.punct.add(text)
         return [{"text": text, "final": True}]
 
+    async def close(self):
+        pass        # sherpa 流随 GC 释放,无需显式关闭(接口对称)
+
 
 def make_backend():
     """按 env 选引擎。doubao 在后续任务接入;此处先只有 sherpa。"""
@@ -166,12 +169,25 @@ async def handle(ws, make_backend=make_backend, paster=None):
                 final_text = ev["text"]
         return final_text
 
+    async def close_backend(b):
+        if b is None:
+            return
+        close = getattr(b, "close", None)
+        if close:
+            try:
+                await close()
+            except Exception:
+                pass
+
     try:
         async for msg in ws:
             if isinstance(msg, (bytes, bytearray)):
                 if backend is None:
                     backend = make_backend(); await backend.start()
-                await emit(await backend.accept(msg))
+                try:
+                    await emit(await backend.accept(msg))
+                except Exception as e:           # 单帧解码出错不应拖垮整条连接
+                    print(f"[asr] accept error: {e}", flush=True)
             else:
                 try:
                     data = json.loads(msg)
@@ -184,25 +200,37 @@ async def handle(ws, make_backend=make_backend, paster=None):
                         "audio_params": {"format": "pcm", "sample_rate": 16000, "channels": 1},
                     }))
                 elif t == "listen" and data.get("state") == "start":
+                    await close_backend(backend)         # 关掉上一个(防 doubao ws/reader 泄漏)
                     backend = make_backend(); await backend.start()
                     last_sent = None
                 elif t == "listen" and data.get("state") == "stop":
                     if backend is None:
                         backend = make_backend(); await backend.start()
-                    final_text = await emit(await backend.stop())
+                    try:
+                        final_text = await emit(await backend.stop())
+                    except Exception as e:
+                        print(f"[asr] stop error: {e}", flush=True); final_text = None
+                    await close_backend(backend)
                     backend = None
                     if final_text and paster.enabled:
-                        paster.paste(final_text)
-                        if paster.auto_enter:
-                            paster.enter()
+                        try:                             # 粘贴失败(如未授辅助功能)不应断开连接
+                            paster.paste(final_text)
+                            if paster.auto_enter:
+                                paster.enter()
+                        except Exception as e:
+                            print(f"[asr] paste error: {e}", flush=True)
                 elif t == "submit":
                     if paster.enabled:
-                        paster.enter()
+                        try: paster.enter()
+                        except Exception: pass
                 elif t == "clear":
                     if paster.enabled:
-                        paster.clear()
+                        try: paster.clear()
+                        except Exception: pass
     except websockets.ConnectionClosed:
         pass
+    finally:
+        await close_backend(backend)                     # 中途断连(无 listen:stop)也释放在用后端
 
 
 async def main():

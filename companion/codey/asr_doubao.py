@@ -282,3 +282,6 @@ class DoubaoBackend:
             res = await transcribe_wav_bytes(pcm_to_wav_bytes(bytes(self._pcm)))
             text = (res.get("text") or "").strip()
         return [{"text": text, "final": True}]
+
+    async def close(self):
+        await self.sess.close()     # 中途断连时释放上游 ws + reader 任务(防泄漏/配额耗尽)
