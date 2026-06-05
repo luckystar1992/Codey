@@ -208,6 +208,32 @@ python3 asr_stream.py
 
 固件会连接 `ws://<mac-ip>:8788/`，并从 StopWatch 麦克风发送 16 kHz 单声道 PCM 音频。
 
+### 语音输入桥
+
+`asr_stream.py` 是手表连接的流式 ASR 服务（端口 `:8788`）。启动时打印已选引擎，并自动加载
+`companion/.env`（将 `companion/.env.example` 复制为 `.env` 并填写凭据）。
+
+**引擎** — 由 `CODEY_ASR_ENGINE` 控制（默认 `auto`）：
+
+- `sherpa` — 本地 sherpa-onnx Zipformer；离线可用。
+- `doubao` — 火山引擎流式语音识别大模型 2.0（中文准确，内置标点/ITN）；需要
+  `DOUBAO_API_KEY` + `DOUBAO_APP_ID`；流断时自动降级为文件式 ASR。
+- `auto` — 有 `DOUBAO_API_KEY` 则用豆包，否则用 sherpa。
+
+**粘贴** — 录音松开后，最终转写文本自动粘贴到当前聚焦的 macOS 窗口（`pbcopy` +
+`osascript` Cmd+V）。**首次运行需要辅助功能授权**（系统设置 → 隐私与安全性 → 辅助功能
+→ 启用运行 Python 的终端），否则 Cmd+V 会被系统静默忽略。可用 `CODEY_PASTE=0` 关闭粘贴；
+`CODEY_PASTE_AUTO_ENTER=1` 可在粘贴后自动回车提交。
+
+**submit / clear** — 固件（BtnB 多击）发送 `{"type":"submit"}`（回车）或
+`{"type":"clear"}`（Cmd+A + 删除）；Companion 均已处理。
+
+**chime** — `/codey/state` 中的 `chime: {agent, seq}` 在 Claude/Codex 一轮对话完成时更新
+（`seq` 每次完成递增，其余时候为 `null`）。固件检测到 seq 变化时播放提示音。
+
+**可选本地标点** — 在 `companion/models/` 下放置 sherpa `*punct*` 模型目录，可为本地
+sherpa 转写结果补充标点；不放置则跳过标点步骤。
+
 ## 手表操作
 
 - 左键：切换页面。

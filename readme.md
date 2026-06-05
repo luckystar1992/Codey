@@ -213,6 +213,34 @@ python3 asr_stream.py
 The firmware connects to `ws://<mac-ip>:8788/` and streams 16 kHz mono PCM from the
 StopWatch microphone.
 
+### Voice input bridge
+
+`asr_stream.py` is the streaming ASR server on `:8788` the watch connects to. On start it
+prints the selected engine and auto-loads `companion/.env` (copy `companion/.env.example`
+and fill in credentials).
+
+**Engine** — controlled by `CODEY_ASR_ENGINE` (default `auto`):
+
+- `sherpa` — local sherpa-onnx Zipformer; works offline.
+- `doubao` — 火山引擎 streaming ASR (Chinese-accurate, built-in punctuation/ITN); requires
+  `DOUBAO_API_KEY` + `DOUBAO_APP_ID`; falls back to file-mode ASR if the stream drops.
+- `auto` — uses doubao if `DOUBAO_API_KEY` is set, otherwise sherpa.
+
+**Paste** — on recording release the final transcript is auto-pasted into the focused macOS
+window (`pbcopy` + `osascript` Cmd+V). **First run requires Accessibility permission**
+(System Settings → Privacy & Security → Accessibility → enable the terminal running Python),
+otherwise Cmd+V is silently dropped. Toggle with `CODEY_PASTE=0`; add auto-Enter after paste
+with `CODEY_PASTE_AUTO_ENTER=1`.
+
+**submit / clear** — the firmware (BtnB multi-press) sends `{"type":"submit"}` (Enter) or
+`{"type":"clear"}` (Cmd+A + delete); the companion handles both.
+
+**chime** — `/codey/state` carries `chime: {agent, seq}` when a Claude/Codex turn completes
+(`seq` increments per completion, `null` otherwise). The firmware plays a tone on seq change.
+
+**Optional local punctuation** — drop a sherpa `*punct*` model directory under
+`companion/models/` to punctuate local-sherpa output; absent → no-op.
+
 ## Device Controls
 
 - Left button: switch page.
