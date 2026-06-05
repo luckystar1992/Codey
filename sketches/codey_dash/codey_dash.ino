@@ -617,6 +617,8 @@ static int      g_tStartScroll = 0;
 static uint32_t g_lastTapMs = 0;             // 双击窗(尽力,硬件多半接不住)
 static int      g_tapRow = -1;               // 最近 TAP 命中行(供 handleAction)
 static uint32_t g_touchLostMs = 0;           // 失触起点;去抖确认抬起(防 getCount 单帧抖动)
+static bool     g_gestureFired = false;      // 本次手势是否已触发滑动(阈值即发,防重复/防误判点击)
+static bool     g_forceRender = false;       // 动作发生时强制立即重绘(切页跟手)
 
 static int listViewH() { return SIZE - LIST_TOP - LIST_BOT; }
 static int maxScrollFor(int provIdx) {
@@ -1281,32 +1283,33 @@ static TouchAction detectTouchAction(uint32_t now) {
   if (touching) {
     g_tLastX = td.x; g_tLastY = td.y; g_touchLostMs = 0;   // 有触摸:清失触计时(吃掉单帧抖动)
     if (!g_tDown) {                                 // 按下沿(用 g_tDown,抖动恢复不会重置基准)
-      g_tDown = true; g_tx0 = td.x; g_ty0 = td.y; g_tAxis = 0;
+      g_tDown = true; g_tx0 = td.x; g_ty0 = td.y; g_tAxis = 0; g_gestureFired = false;
       g_tProv = curListProv(); g_tStartScroll = (g_tProv >= 0) ? g_scroll[g_tProv] : 0;
     } else {                                        // 移动中
       int dx = g_tLastX - g_tx0, dy = g_tLastY - g_ty0;
       if (!g_tAxis && (abs(dx) > TAP_MOVE || abs(dy) > TAP_MOVE)) g_tAxis = (abs(dx) > abs(dy)) ? 'x' : 'y';
-      if (g_tAxis == 'y' && g_tProv >= 0) {         // 列表竖拖滚动(实时)
+      bool scrollable = (g_tProv >= 0 && maxScrollFor(g_tProv) > 0);
+      if (g_tAxis == 'y' && scrollable) {           // 可滚动列表:竖拖实时滚动
         int ns = g_tStartScroll - dy, mx = maxScrollFor(g_tProv);
         g_scroll[g_tProv] = ns < 0 ? 0 : (ns > mx ? mx : ns);
+        if (!g_gestureFired && dy > 0 && g_scroll[g_tProv] <= 0 && dy >= SWIPE_MIN) {   // 滚到顶再下拉=返回
+          act = ACT_SWIPE_DOWN; g_gestureFired = true;
+        }
+      } else if (!g_gestureFired) {                 // 阈值即触发(跟手:不等抬手就切页/返回)
+        if (g_tAxis == 'x' && abs(dx) >= SWIPE_MIN)      { act = (dx < 0) ? ACT_SWIPE_L : ACT_SWIPE_R; g_gestureFired = true; }
+        else if (g_tAxis == 'y' && abs(dy) >= SWIPE_MIN) { act = (dy < 0) ? ACT_SWIPE_UP : ACT_SWIPE_DOWN; g_gestureFired = true; }
       }
     }
   } else if (g_tDown) {                             // 无触摸:去抖确认抬起(防单帧 getCount=0 抖动)
     if (g_touchLostMs == 0) g_touchLostMs = now;
-    else if (now - g_touchLostMs >= RELEASE_MS) {   // 抬起沿 → 判定动作
+    else if (now - g_touchLostMs >= RELEASE_MS) {   // 抬起沿 → 仅判点击(滑动已在移动中触发)
       int dx = g_tLastX - g_tx0, dy = g_tLastY - g_ty0;
-      bool scrollable = (g_tProv >= 0 && maxScrollFor(g_tProv) > 0);
-      if (g_tAxis == 'x' && abs(dx) >= SWIPE_MIN)        act = (dx < 0) ? ACT_SWIPE_L : ACT_SWIPE_R;
-      else if (g_tAxis == 'y' && abs(dy) >= SWIPE_MIN) { // 竖滑:不可滚动→导航;可滚动列表仅"滚到顶再下拉"=返回
-        if (!scrollable)                            act = (dy < 0) ? ACT_SWIPE_UP : ACT_SWIPE_DOWN;
-        else if (dy > 0 && g_scroll[g_tProv] <= 0)  act = ACT_SWIPE_DOWN;
-        // 否则:可滚动列表里的竖拖=滚动,不发导航(修复滚动误触发返回)
-      } else if (g_tAxis == 0 && abs(dx) < TAP_MOVE && abs(dy) < TAP_MOVE) {
+      if (!g_gestureFired && g_tAxis == 0 && abs(dx) < TAP_MOVE && abs(dy) < TAP_MOVE) {
         g_tapRow = (g_tProv >= 0) ? rowHitAt(g_tProv, g_ty0) : -1;
         act = (now - g_lastTapMs < DBL_MS) ? ACT_DOUBLE_TAP : ACT_TAP;
         g_lastTapMs = now;
       }
-      g_tDown = false; g_tAxis = 0; g_tProv = -1; g_touchLostMs = 0;   // 抬起即复位
+      g_tDown = false; g_tAxis = 0; g_tProv = -1; g_touchLostMs = 0; g_gestureFired = false;   // 抬起即复位
     }
   }
   return act;
@@ -1361,7 +1364,7 @@ void loop() {
   // ---- 触摸手势(仅非设置/非语音态)----
   if (!g_inSettings && !g_voice) {
     TouchAction act = detectTouchAction(now);
-    if (act != ACT_NONE) { handleAction(act); lastActiveMs = now; }
+    if (act != ACT_NONE) { handleAction(act); lastActiveMs = now; g_forceRender = true; }
   } else {                                   // 进入设置/语音态:清手势残留
     g_tDown = false; g_tAxis = 0; g_tProv = -1; g_touchLostMs = 0;
   }
@@ -1472,6 +1475,6 @@ void loop() {
   // 触摸采样与重绘解耦:循环高速跑(每几 ms 采一次触摸,接住快速双击的抬手间隙),
   // 重绘限到 ~30fps;语音叠层仍每帧重绘以保持粒子顺滑。
   static uint32_t lastRender = 0;
-  if (g_voice || now - lastRender >= 33) { render(); lastRender = now; }
+  if (g_voice || g_forceRender || now - lastRender >= 33) { render(); lastRender = now; g_forceRender = false; }
   delay(g_voice ? 2 : 5);
 }
