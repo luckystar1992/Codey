@@ -1,7 +1,7 @@
 # Codey 实时 Agent 会话监视器 — 设计文档
 
 - 日期:2026-06-03
-- 状态:已通过 brainstorming,待写实现计划
+- 状态:已实现(companion=Python 计划1;固件=计划2 2026-06-04-firmware-session-pages.md)
 - 目标设备:M5Stack StopWatch(C152, ESP32-S3, 1.75" AMOLED **触摸**圆屏 466×466)
 
 ## 1. 背景与目标

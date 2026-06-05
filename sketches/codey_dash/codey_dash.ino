@@ -1110,6 +1110,29 @@ void setup() {
   render();
 }
 
+static void copyStr(char* dst, size_t n, const char* src) { if (!src) src = ""; strncpy(dst, src, n - 1); dst[n - 1] = 0; }
+
+static void parseSession(JsonObject so, Sess& s) {
+  copyStr(s.id,     sizeof(s.id),     so["id"]            | "");
+  copyStr(s.name,   sizeof(s.name),   so["name"]          | "");
+  copyStr(s.model,  sizeof(s.model),  so["model"]         | "");
+  copyStr(s.branch, sizeof(s.branch), so["git"]["branch"] | "");
+  copyStr(s.task,   sizeof(s.task),   so["current_task"]  | "");
+  copyStr(s.effort, sizeof(s.effort), so["effort"]        | "");
+  s.status   = statusFromStr(so["status"] | "waiting");
+  s.ctxPct   = so["context_pct"]    | 0;
+  s.ctxTok   = so["context_tokens"] | 0L;
+  s.ctxWin   = so["context_window"] | 200000L;
+  s.tokTotal = so["tokens_total"]   | 0L;
+  s.turn     = so["turn"]           | 0;
+  s.added    = so["git"]["added"]    | 0;
+  s.modified = so["git"]["modified"] | 0;
+  s.subagents= so["subagents"]      | 0;
+  s.startedAt= so["started_at"]     | 0L;
+  s.nports = 0;
+  for (JsonVariant pv : so["ports"].as<JsonArray>()) { if (s.nports < MAX_PORTS) s.ports[s.nports++] = pv.as<int>(); }
+}
+
 // fetch normalized usage JSON from the Companion and update PROV with real Claude data
 static void fetchState() {
   if (WiFi.status() != WL_CONNECTED) return;
@@ -1133,8 +1156,18 @@ static void fetchState() {
         PROV[i].sessReset = pr["session"]["reset_epoch"] | 0L;
         PROV[i].weekReset = pr["weekly"]["reset_epoch"]  | 0L;
         if (i == 0 || i == 1) { const char* m = pr["model"] | ""; char* dst = (i == 0) ? g_model : g_codexModel; if (m[0]) { strncpy(dst, m, sizeof(g_model) - 1); dst[sizeof(g_model) - 1] = 0; } }
+        PROV[i].activeCount = pr["active_count"]         | 0;
+        PROV[i].dirtyRepos  = pr["agg"]["dirty_repos"]   | 0;
+        PROV[i].tokPerMin   = pr["agg"]["tokens_per_min"]| 0L;
+        int n = 0;
+        for (JsonObject so : pr["sessions"].as<JsonArray>()) {
+          if (n >= MAX_SESS) break;
+          parseSession(so, PROV[i].sess[n]); n++;
+        }
+        PROV[i].nsess = n;
       }
       g_haveData = true; ok = true;
+      if (detailProv >= 0 && detailIdx >= PROV[detailProv].nsess) detailProv = -1;
       long ts = doc["ts"] | 0L;                      // Mac epoch -> set the device clock (NTP-independent)
       if (ts > 1700000000L && ts < 1900000000L) {
         struct timeval tv; tv.tv_sec = (time_t)ts; tv.tv_usec = 0; settimeofday(&tv, nullptr);
@@ -1152,7 +1185,8 @@ static void fetchState() {
   if (ok) { g_fetchFails = 0; g_companionOk = true; }
   else if (++g_fetchFails >= 2) {                  // usage 接口不可达:自愈重连 + 把显示重置为 0
     g_fetchFails = 0; g_companionOk = false; g_haveData = false;
-    for (int i = 0; i < 2; i++) { PROV[i].sessUsed = 0; PROV[i].weekUsed = 0; PROV[i].nsess = 0; }
+    for (int i = 0; i < 2; i++) { PROV[i].sessUsed = 0; PROV[i].weekUsed = 0; PROV[i].nsess = 0; PROV[i].activeCount = 0; PROV[i].dirtyRepos = 0; PROV[i].tokPerMin = 0; }
+    detailProv = -1;
     g_model[0] = g_codexModel[0] = 0;
     resolveMac(); wsConnect();                     // IP drift self-heal (netTask 上下文)
   }
