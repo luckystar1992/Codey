@@ -33,8 +33,7 @@ static const uint32_t COL_CODEX  = 0x22D3A6;
 static const uint32_t COL_DANGER = 0xFF5D5D;
 static const uint32_t COL_WHITE  = 0xFFFFFF;
 
-// ---------- cross-provider session reference (used by dashboard sort) ----------
-struct SessRef { int prov; int idx; };
+// (SessRef / collectSorted removed — dashboard replaced by per-provider usage pages)
 
 // ---------- provider data ----------
 static Prov PROV[2] = {
@@ -182,12 +181,6 @@ static void drawArc(M5Canvas& dst, uint32_t color, int pct) {
   drawArcRange(dst, color, pct, -138.0f, 276.0f, false);
 }
 
-// 仪表盘:左半=Claude(从顶往左下填),右半=Codex(从顶往右下填),底部缺口居中。
-static void drawDualArc(M5Canvas& dst, int claudePct, int codexPct) {
-  drawArcRange(dst, COL_CLAUDE, claudePct, -138.0f, 138.0f, true);   // left side, fill from top
-  drawArcRange(dst, COL_CODEX,  codexPct,    0.0f,  138.0f, false);  // right side, fill from top
-}
-
 // ---------- header (dot + name · clock · battery) ----------
 static void drawHeader(const Prov& p, const String& clock) {
   uint16_t cc = c565(p.color);
@@ -218,7 +211,7 @@ static void drawHeader(const Prov& p, const String& clock) {
 
 // ---------- page dots ----------
 static void drawDots(int active, uint32_t color) {
-  int n = 3, gap = 7, dotW = 7, longW = 18, y = 446;
+  int n = 2, gap = 7, dotW = 7, longW = 18, y = 446;
   int total = 0; for (int i = 0; i < n; i++) total += (i == active ? longW : dotW) + (i ? gap : 0);
   int x = CX - total / 2;
   for (int i = 0; i < n; i++) {
@@ -417,19 +410,78 @@ static const char* moodForStatus(uint8_t status) {
   }
 }
 
-// 跨两端把会话引用收集进数组并按 (rank, -ctxPct) 排序;返回总数。
-static int collectSorted(SessRef* out, int cap) {
-  int n = 0;
-  for (int pr = 0; pr < 2; pr++)
-    for (int i = 0; i < PROV[pr].nsess && n < cap; i++) out[n++] = { pr, i };
-  for (int a = 0; a < n; a++)                              // 简单插入排序(n<=24)
-    for (int b = a + 1; b < n; b++) {
-      const Sess& A = PROV[out[a].prov].sess[out[a].idx];
-      const Sess& B = PROV[out[b].prov].sess[out[b].idx];
-      int ra = statusRank((SessStatus)A.status), rb = statusRank((SessStatus)B.status);
-      if (rb < ra || (rb == ra && B.ctxPct > A.ctxPct)) { SessRef t = out[a]; out[a] = out[b]; out[b] = t; }
-    }
-  return n;
+// 倒计时格式(d/h/m/s 紧凑)
+static String fmtDur(long secs) {
+  if (secs < 0) secs = 0;
+  long d = secs / 86400, h = (secs % 86400) / 3600, m = (secs % 3600) / 60, s = secs % 60;
+  char b[16];
+  if (d > 0)      snprintf(b, sizeof(b), "%ldd", d);
+  else if (h > 0) snprintf(b, sizeof(b), "%ldh%02ldm", h, m);
+  else if (m > 0) snprintf(b, sizeof(b), "%ldm", m);
+  else            snprintf(b, sizeof(b), "%lds", s);
+  return String(b);
+}
+
+// 用量心情(给主页大吉祥物)
+static const char* moodForUsage(int used, int active, int battery) {
+  if (battery <= 12) return "sleepy";
+  if (active > 0)    return "alert";
+  if (used >= 88)    return "worried";
+  if (used >= 65)    return "tired";
+  if (used >= 40)    return "focused";
+  return "happy";
+}
+
+// USAGE/WEEKLY 分段表(还原旧版)
+static void drawMeter(int y, const char* label, int used, const String& reset, uint32_t color) {
+  const int segs = 10; const int labelX = 56; const float pitch = 12.0f;
+  const int barX = 120; const int pctRightX = 306; const int timeRightX = 378;
+  int filled = constrain((int)roundf(used / 100.0f * segs), 0, segs);
+  bool hot = used >= 85;
+  uint16_t segc = c565(hot ? COL_DANGER : color), empty = c565(0x1b1c20);
+  cv.setFont(&fonts::FreeSans9pt7b); cv.setTextSize(1);
+  cv.setTextColor(c565(0x9a9ca2)); cv.setTextDatum(middle_left);
+  cv.drawString(label, labelX, y);
+  for (int i = 0; i < segs; i++)
+    cv.fillRoundRect(barX + (int)(i * pitch), y - 5, (int)pitch - 3, 10, 2, i < filled ? segc : empty);
+  char pc[8]; snprintf(pc, sizeof(pc), "%d%%", used);
+  cv.setFont(&fonts::FreeMonoBold12pt7b); cv.setTextColor(c565(COL_WHITE)); cv.setTextDatum(middle_right);
+  cv.drawString(pc, pctRightX, y);
+  cv.setFont(&fonts::FreeMono9pt7b); cv.setTextColor(c565(0x6d6f75)); cv.setTextDatum(middle_right);
+  cv.drawString(reset.c_str(), timeRightX, y);
+}
+
+// 活跃会话胶囊(N ACTIVE;点它/上滑进会话列表)
+static void drawActivePill(int cy, int n, uint32_t color) {
+  bool on = n > 0; uint16_t cc = c565(color);
+  char num[4]; snprintf(num, sizeof(num), "%d", n);
+  cv.setFont(&fonts::FreeMonoBold9pt7b); int nW = cv.textWidth(num);
+  cv.setFont(&fonts::FreeSans9pt7b);     int tW = cv.textWidth("ACTIVE");
+  int contentW = 7 + 7 + nW + 8 + tW;
+  int w = contentW + 26, x = CX - w / 2, h = 30, y = cy - h / 2;
+  cv.fillRoundRect(x, y, w, h, 15, on ? c565(shade(color, -0.7)) : c565(0x0e0f12));
+  cv.drawRoundRect(x, y, w, h, 15, on ? cc : c565(0x2a2c31));
+  int ix = x + 13;
+  cv.fillCircle(ix + 3, cy, 3, on ? cc : c565(0x4d4f55));
+  cv.setFont(&fonts::FreeMonoBold9pt7b);
+  cv.setTextColor(on ? c565(COL_WHITE) : c565(0x8a8c92)); cv.setTextDatum(middle_left);
+  cv.drawString(num, ix + 11, cy);
+  cv.setFont(&fonts::FreeSans9pt7b); cv.setTextColor(c565(0x808288)); cv.setTextDatum(middle_left);
+  cv.drawString("ACTIVE", ix + 11 + nW + 8, cy);
+}
+
+// 把某 provider 的弧(=max(sess,week))画进它的缓存环再贴到 cv;主页/列表共用,避免串味
+static void blitProviderArc(int provIdx) {
+  static int aPct = -1, bPct = -1; static uint32_t aCol = 0, bCol = 0;
+  const Prov& p = PROV[provIdx];
+  int pct = max(p.sessUsed, p.weekUsed);
+  M5Canvas* spr = (provIdx == 0) ? &g_ringA : &g_ringB;
+  bool ok = (provIdx == 0) ? g_ringAok : g_ringBok;
+  int* cpct = (provIdx == 0) ? &aPct : &bPct;
+  uint32_t* ccol = (provIdx == 0) ? &aCol : &bCol;
+  if (!ok) { cv.fillSprite(c565(0x000000)); drawArc(cv, p.color, pct); return; }
+  if (pct != *cpct || p.color != *ccol) { spr->fillSprite(c565(0x000000)); drawArc(*spr, p.color, pct); *cpct = pct; *ccol = p.color; }
+  spr->pushSprite(&cv, 0, 0);
 }
 
 // ---- WebSocket streaming-ASR client ----
@@ -547,13 +599,14 @@ static void drawVoiceOverlay() {
 }
 
 
-// forward decls (实现见 Task 4-7)
-static void renderDashboard();
+// forward decls
+static void renderUsagePage(int provIdx);
 static void renderListPage(int provIdx);
 static void renderDetailPage();
 
 // detail 视图状态:active<0 表示不在详情;否则 detailProv(0/1) + detailIdx
 static int detailProv = -1, detailIdx = 0;
+static bool g_listView = false;   // true: 当前 provider 的会话列表(从主页滑入)
 
 // 列表页布局(466 屏内)
 static const int ROW_H = 47, LIST_TOP = 116, LIST_BOT = 56;
@@ -577,98 +630,41 @@ static int maxScrollFor(int provIdx) {
 // ---------- compose one page ----------
 static void render() {
   if (g_voice) { drawVoiceOverlay(); cv.pushSprite(0, 0); return; }
-
-  if (detailProv >= 0) { renderDetailPage(); cv.pushSprite(0, 0); return; }
-  if (page == 0)      renderDashboard();
-  else                renderListPage(page - 1);   // page1->claude(0), page2->codex(1)
+  if (detailProv >= 0)      renderDetailPage();
+  else if (g_listView)      renderListPage(page);
+  else                      renderUsagePage(page);
   cv.pushSprite(0, 0);
 }
 
-static void renderDashboard() {
-  // 双弧缓存在 g_ringA(仪表盘专用),仅在 pct 变化时重算
-  static int rcA = -1, rcX = -1;
-  if (!g_ringAok) { cv.fillSprite(c565(0x000000)); }
-  else {
-    if (PROV[0].weekUsed != rcA || PROV[1].weekUsed != rcX) {
-      g_ringA.fillSprite(c565(0x000000));
-      drawDualArc(g_ringA, PROV[0].weekUsed, PROV[1].weekUsed);
-      rcA = PROV[0].weekUsed; rcX = PROV[1].weekUsed;
-    }
-    g_ringA.pushSprite(&cv, 0, 0);
+static void renderUsagePage(int provIdx) {
+  const Prov& p = PROV[provIdx];
+  blitProviderArc(provIdx);
+  char clk[8]; snprintf(clk, sizeof(clk), "%02d:%02d", g_clkH, g_clkM);
+  drawHeader(p, String(clk));
+  float t = (millis() - bootMs) / 1000.0f;
+  const char* mood = moodForUsage(max(p.sessUsed, p.weekUsed), p.activeCount, g_batt);
+  if (provIdx == 0) drawClaude(CX, 150, p.color, mood, t);
+  else              drawCodex(CX, 150, p.color, mood, t);
+  const char* mdl = (provIdx == 0) ? g_model : g_codexModel;
+  if (mdl[0]) {
+    cv.setFont(&fonts::FreeSans9pt7b); cv.setTextSize(1);
+    cv.setTextDatum(middle_center); cv.setTextColor(c565(0x8a8d94));
+    cv.drawString(mdl, CX, 226);
   }
-
-  // 顶部标题
-  char hdr[40];
-  snprintf(hdr, sizeof(hdr), "CLAUDE %d%%  ·  CODEX %d%% WK", PROV[0].weekUsed, PROV[1].weekUsed);
-  cv.setFont(&fonts::FreeSans9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_center);
-  cv.setTextColor(c565(0x8a9097)); cv.drawString(hdr, CX, 52);
-
-  // 双吉祥物 + 中央活跃计数 a·b
-  drawMiniMascot(CX - 96, 104, 30, COL_CLAUDE, true,  ST_EXECUTING);
-  drawMiniMascot(CX + 96, 104, 30, COL_CODEX,  false, ST_THINKING);
-  cv.setFont(&fonts::FreeSans9pt7b); cv.setTextColor(c565(0x8a9097)); cv.setTextDatum(middle_center);
-  cv.drawString("ACTIVE", CX, 86);
-  char ac[16]; snprintf(ac, sizeof(ac), "%d", PROV[0].activeCount);
-  char xc[16]; snprintf(xc, sizeof(xc), "%d", PROV[1].activeCount);
-  cv.setFont(&fonts::FreeSansBold18pt7b);
-  int wA = cv.textWidth(ac), wDot = cv.textWidth(" · "), wX = cv.textWidth(xc);
-  int x0 = CX - (wA + wDot + wX) / 2;
-  cv.setTextDatum(middle_left); cv.setTextColor(c565(0xe6e8ec)); cv.drawString(ac, x0, 116);
-  cv.setTextColor(c565(COL_CLAUDE)); cv.drawString(" · ", x0 + wA, 116);
-  cv.setTextColor(c565(0xe6e8ec)); cv.drawString(xc, x0 + wA + wDot, 116);
-
-  // 跨端 top5 色块(2 列网格)
-  SessRef refs[MAX_SESS * 2]; int total = collectSorted(refs, MAX_SESS * 2);
-  const int N = 5, colW = 168, rowH = 34, gap = 8;
-  const int gx = CX - colW - gap / 2, gy = 168;
-  cv.setFont(&fonts::FreeSans9pt7b); cv.setTextDatum(middle_left);
-  for (int i = 0; i < total && i < N; i++) {
-    const Sess& s = PROV[refs[i].prov].sess[refs[i].idx];
-    bool isC = refs[i].prov == 0;
-    int cx = gx + (i % 2) * (colW + gap), cy = gy + (i / 2) * (rowH + gap);
-    cv.fillRoundRect(cx, cy, colW, rowH, 8, c565(shade(isC ? COL_CLAUDE : COL_CODEX, -0.78f)));
-    cv.drawRoundRect(cx, cy, colW, rowH, 8, c565(shade(isC ? COL_CLAUDE : COL_CODEX, -0.40f)));
-    char nm[32]; truncCp(s.name, 7, nm, sizeof(nm));
-    const char* ico = s.status == ST_EXECUTING ? ">" : s.status == ST_THINKING ? "*" : s.status == ST_DONE ? "v" : "=";
-    char line[48]; snprintf(line, sizeof(line), "%s %s %d%%", ico, nm, s.ctxPct);
-    cv.setTextColor(c565(isC ? COL_CLAUDE : COL_CODEX));
-    cv.drawString(line, cx + 10, cy + rowH / 2);
-  }
-  if (total > N) {
-    int cx = gx + (N % 2) * (colW + gap), cy = gy + (N / 2) * (rowH + gap);
-    char more[24]; snprintf(more, sizeof(more), "+%d more", total - N);
-    cv.setTextColor(c565(0x6f757d)); cv.setTextDatum(middle_center);
-    cv.drawString(more, cx + colW / 2, cy + rowH / 2);
-  }
-  if (total == 0) {
-    cv.setFont(&fonts::FreeSans9pt7b); cv.setTextColor(c565(0x6f757d)); cv.setTextDatum(middle_center);
-    cv.drawString("no active sessions", CX, 200);
-  }
-
-  // 底部聚合
-  char agg[48]; char km[16];
-  fmtK(PROV[0].tokPerMin + PROV[1].tokPerMin, km, sizeof(km));
-  snprintf(agg, sizeof(agg), "%c %d dirty · %s/min", '~', PROV[0].dirtyRepos + PROV[1].dirtyRepos, km);
-  cv.setFont(&fonts::FreeMono9pt7b); cv.setTextColor(c565(0x6f757d)); cv.setTextDatum(middle_center);
-  cv.drawString(agg, CX, 330);
-
+  long nowE = time(nullptr); bool epochOK = nowE > 1700000000L;
+  String sR = (epochOK && p.sessReset > nowE) ? fmtDur(p.sessReset - nowE) : String("");
+  String wR = (epochOK && p.weekReset > nowE) ? fmtDur(p.weekReset - nowE) : String("");
+  drawMeter(250, "usage",  p.sessUsed, sR, p.color);
+  drawMeter(286, "weekly", p.weekUsed, wR, p.color);
+  drawActivePill(344, p.activeCount, p.color);
   drawWifiStatus(406);
-  drawDots(0, COL_WHITE);
+  drawDots(provIdx, p.color);
 }
 static void renderListPage(int provIdx) {
   const Prov& p = PROV[provIdx];
   uint32_t color = p.color;
 
-  // 单弧缓存在 g_ringB(仅列表用;详情页直接画 cv),pct 变化才重算
-  static int rbPct = -1; static uint32_t rbCol = 0;
-  if (g_ringBok) {
-    if (p.weekUsed != rbPct || color != rbCol) {
-      g_ringB.fillSprite(c565(0x000000));
-      drawArc(g_ringB, color, p.weekUsed);
-      rbPct = p.weekUsed; rbCol = color;
-    }
-    g_ringB.pushSprite(&cv, 0, 0);
-  } else cv.fillSprite(c565(0x000000));
+  blitProviderArc(provIdx);
 
   // 头部:小吉祥物 + "CLAUDE · N"
   drawMiniMascot(CX - 52, 60, 22, color, provIdx == 0, ST_THINKING);
@@ -680,7 +676,7 @@ static void renderListPage(int provIdx) {
   if (p.nsess == 0) {
     cv.setFont(&fonts::FreeSans9pt7b); cv.setTextColor(c565(0x6f757d)); cv.setTextDatum(middle_center);
     cv.drawString("no sessions", CX, CY);
-    drawDots(provIdx + 1, color);
+    drawDots(provIdx, color);
     return;
   }
 
@@ -721,7 +717,7 @@ static void renderListPage(int provIdx) {
   if (sc > 0)                       cv.fillRect(40, LIST_TOP, SIZE - 80, 8, c565(0x000000));
   if (sc < maxScrollFor(provIdx))   cv.fillRect(40, SIZE - LIST_BOT - 8, SIZE - 80, 8, c565(0x000000));
 
-  drawDots(provIdx + 1, color);
+  drawDots(provIdx, color);
 }
 static void renderDetailPage() {
   const Prov& p = PROV[detailProv];
@@ -1253,7 +1249,7 @@ static void settingsButtons() {
 }
 
 // ---- 触摸手势辅助函数 ----
-static int curListProv() { return (detailProv < 0 && page >= 1 && page <= 2) ? page - 1 : -1; }
+static int curListProv() { return (detailProv < 0 && g_listView) ? page : -1; }
 
 // 列表页:由屏幕 y 命中会话行号;-1 = 空白
 static int rowHitAt(int provIdx, int ty) {
@@ -1262,46 +1258,35 @@ static int rowHitAt(int provIdx, int ty) {
   return (idx >= 0 && idx < PROV[provIdx].nsess) ? idx : -1;
 }
 
-// 全局最忙(仪表盘单击进详情)
-static bool globalTop(int& prov, int& idx) {
-  SessRef refs[MAX_SESS * 2]; int n = collectSorted(refs, MAX_SESS * 2);
-  if (n == 0) return false;
-  prov = refs[0].prov; idx = refs[0].idx; return true;
-}
-
 static void enterDetail(int prov, int idx) { detailProv = prov; detailIdx = idx; }
 static void exitDetail() { detailProv = -1; }
 
-// 横滑:详情切会话,否则切页。dir:+1 下一 / -1 上一
+// 横滑:详情切会话,否则切 provider 主页。dir:+1 下一 / -1 上一
 static void swipePage(int dir) {
   if (detailProv >= 0) {
     int n = PROV[detailProv].nsess; if (n > 0) detailIdx = (detailIdx + dir + n) % n;
   } else {
-    page = (page + dir + 3) % 3;
+    page = (page + dir + 2) % 2;
   }
 }
 
-// 单击派发:列表点行=该会话,点空白=置顶;仪表盘=全局最忙;详情不响应单击
+// 单击派发:列表点行=该会话/空白=置顶;主页=进列表;详情不响应单击
 static void doTap(int row) {
   if (detailProv >= 0) return;
-  if (page == 0) { int pr, ix; if (globalTop(pr, ix)) enterDetail(pr, ix); }
-  else {
-    int pi = page - 1;
-    if (PROV[pi].nsess == 0) return;
-    enterDetail(pi, row >= 0 ? row : 0);
-  }
+  if (g_listView) { if (PROV[page].nsess) enterDetail(page, row >= 0 ? row : 0); }
+  else g_listView = true;           // 主页单击 → 进该端会话列表
 }
 
-// 长按 BtnA:列表→置顶详情;详情→返回列表
+// 长按 BtnA:详情→列表;列表→主页;主页→列表
 static void btnALong() {
-  if (detailProv >= 0) { exitDetail(); return; }
-  int pi = curListProv();
-  if (pi >= 0 && PROV[pi].nsess > 0) enterDetail(pi, 0);
+  if (detailProv >= 0) { exitDetail(); return; }      // 详情 → 列表
+  if (g_listView) { g_listView = false; return; }     // 列表 → 主页
+  g_listView = true;                                  // 主页 → 列表
 }
-// 短按 BtnA:详情翻下一会话;否则切页
+// 短按 BtnA:详情翻下一会话;否则切 provider
 static void btnAShort() {
   if (detailProv >= 0) { int n = PROV[detailProv].nsess; if (n > 0) detailIdx = (detailIdx + 1) % n; }
-  else page = (page + 1) % 3;
+  else page = (page + 1) % 2;
 }
 
 void loop() {
@@ -1327,9 +1312,11 @@ void loop() {
     } else if (g_tDown && td.wasReleased()) {
       int dx = td.x - g_tx0, dy = td.y - g_ty0;
       if (g_tAxis == 'x' && abs(dx) >= SWIPE_MIN) swipePage(dx < 0 ? 1 : -1);   // 横滑
-      else if (g_tAxis == 0 && abs(dx) < TAP_MOVE && abs(dy) < TAP_MOVE) {       // 点击 -> 单/双击判定
-        if (now - g_lastTapMs < DBL_MS) { g_lastTapMs = 0; g_pendTapRow = -2;    // 双击 -> 退出详情
-          if (detailProv >= 0) exitDetail(); }
+      else if (g_tAxis == 'y' && g_tProv < 0 && detailProv < 0 && !g_listView && dy < 0 && abs(dy) >= SWIPE_MIN) {
+        g_listView = true;                                                        // 上划主页 → 列表
+      } else if (g_tAxis == 0 && abs(dx) < TAP_MOVE && abs(dy) < TAP_MOVE) {    // 点击 -> 单/双击判定
+        if (now - g_lastTapMs < DBL_MS) { g_lastTapMs = 0; g_pendTapRow = -2;   // 双击 -> 退出详情/关列表
+          if (detailProv >= 0) exitDetail(); else if (g_listView) g_listView = false; }
         else { g_lastTapMs = now;                                                // 记一次单击,延迟派发
           g_pendTapMs = now; g_pendTapRow = (g_tProv >= 0) ? rowHitAt(g_tProv, g_ty0) : -1; }
       }
@@ -1425,8 +1412,8 @@ void loop() {
   float mag = sqrtf(ax * ax + ay * ay + az * az);
   float motion = fabsf(mag - g_accMag); g_accMag = mag;
   bool active = M5.BtnA.isPressed() || M5.BtnB.isPressed() || motion > 0.10f;
-  if (!g_dim && !g_voice && mag > 1.9f && now - g_lastShake > 900) {     // shake -> next page
-    if (detailProv < 0) page = (page + 1) % 3;                  // 详情态下摇晃不切页
+  if (!g_dim && !g_voice && mag > 1.9f && now - g_lastShake > 900) {     // shake -> next provider (main only)
+    if (detailProv < 0 && !g_listView) page = (page + 1) % 2;   // 详情/列表态下摇晃不切 provider
     g_lastShake = now; active = true;
     Serial.printf("[shake] page=%d\n", page);
   }
