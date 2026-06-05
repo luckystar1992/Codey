@@ -27,6 +27,9 @@
 #include "codey_ui.h"
 #include "session_store.h"
 
+// 触摸手势抽象动作(声明置顶:Arduino 生成的函数原型被提到 include 之后,需先见到此类型)
+enum TouchAction { ACT_NONE, ACT_TAP, ACT_DOUBLE_TAP, ACT_SWIPE_L, ACT_SWIPE_R, ACT_SWIPE_UP, ACT_SWIPE_DOWN };
+
 // ---------- palette (RGB888) ----------
 static const uint32_t COL_CLAUDE = 0xF4894F;
 static const uint32_t COL_CODEX  = 0x22D3A6;
@@ -603,16 +606,17 @@ static bool g_listView = false;   // true: 当前 provider 的会话列表(从�
 static const int ROW_H = 47, LIST_TOP = 116, LIST_BOT = 56;
 static int g_scroll[2] = { 0, 0 };                       // claude/codex 各自的滚动像素偏移
 
-// 触摸手势(466 屏内阈值)
-static const int  TAP_MOVE = 16, SWIPE_MIN = 56; static const uint32_t DBL_MS = 800;
-static int       g_dbgTap = 0, g_dbgDtap = 0, g_dbgDelta = 0;   // 临时:单击/双击计数 + 两击间隔(角标诊断)
-static bool     g_tDown = false; static int g_tx0 = 0, g_ty0 = 0; static int g_tStartScroll = 0;
+// 触摸手势 → 抽象动作(action);导航只消费 action,改交互只动 handleAction()
+// 注:enum 已上移到文件顶部(Arduino 自动生成的函数原型会被提到 include 之后,需先见到此类型)
+static const int  TAP_MOVE = 16, SWIPE_MIN = 50; static const uint32_t DBL_MS = 400, RELEASE_MS = 40;
+static bool     g_tDown = false;
+static int      g_tx0 = 0, g_ty0 = 0, g_tLastX = 0, g_tLastY = 0;
 static char     g_tAxis = 0;                 // 0 未定 / 'x' / 'y'
-static int      g_tProv = -1;                // 竖拖作用的列表 provIdx(-1=非列表页)
-static uint32_t g_lastTapMs = 0;             // 双击判定
-static uint32_t g_pendTapMs = 0; static int g_pendTapRow = -2;   // 待派发的单击(row:-1空白,-2无)
-static bool     g_wasTouch = false;          // 上帧是否在触摸(用 getCount 自算边沿,不依赖 wasPressed/wasReleased)
-static int      g_tLastX = 0, g_tLastY = 0;  // 最近有效触点(松手帧 getDetail 可能已清零)
+static int      g_tProv = -1;                // 竖拖滚动作用的列表 provIdx(-1=非列表)
+static int      g_tStartScroll = 0;
+static uint32_t g_lastTapMs = 0;             // 双击窗(尽力,硬件多半接不住)
+static int      g_tapRow = -1;               // 最近 TAP 命中行(供 handleAction)
+static uint32_t g_touchLostMs = 0;           // 失触起点;去抖确认抬起(防 getCount 单帧抖动)
 
 static int listViewH() { return SIZE - LIST_TOP - LIST_BOT; }
 static int maxScrollFor(int provIdx) {
@@ -627,9 +631,6 @@ static void render() {
   if (detailProv >= 0)      renderDetailPage();
   else if (g_listView)      renderListPage(page);
   else                      renderUsagePage(page);
-  { char b[32]; snprintf(b, sizeof(b), "t%d d%d %sms", g_dbgTap, g_dbgDtap, String(g_dbgDelta).c_str());   // 临时角标
-    cv.setFont(&fonts::FreeMono9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_center);
-    cv.setTextColor(c565(0x00ff88)); cv.drawString(b, CX, 454); }
   cv.pushSprite(0, 0);
 }
 
@@ -1272,20 +1273,72 @@ static int rowHitAt(int provIdx, int ty) {
 static void enterDetail(int prov, int idx) { detailProv = prov; detailIdx = idx; }
 static void exitDetail() { detailProv = -1; }
 
-// 横滑:详情切会话,否则切 provider 主页。dir:+1 下一 / -1 上一
-static void swipePage(int dir) {
-  if (detailProv >= 0) {
-    int n = PROV[detailProv].nsess; if (n > 0) detailIdx = (detailIdx + dir + n) % n;
-  } else {
-    page = (page + dir + 2) % 2;
+// 每帧调用;抬起沿返回一个动作(否则 ACT_NONE)。列表竖拖滚动在内部实时处理。
+static TouchAction detectTouchAction(uint32_t now) {
+  auto td = M5.Touch.getDetail();
+  bool touching = M5.Touch.getCount() > 0;
+  TouchAction act = ACT_NONE;
+  if (touching) {
+    g_tLastX = td.x; g_tLastY = td.y; g_touchLostMs = 0;   // 有触摸:清失触计时(吃掉单帧抖动)
+    if (!g_tDown) {                                 // 按下沿(用 g_tDown,抖动恢复不会重置基准)
+      g_tDown = true; g_tx0 = td.x; g_ty0 = td.y; g_tAxis = 0;
+      g_tProv = curListProv(); g_tStartScroll = (g_tProv >= 0) ? g_scroll[g_tProv] : 0;
+    } else {                                        // 移动中
+      int dx = g_tLastX - g_tx0, dy = g_tLastY - g_ty0;
+      if (!g_tAxis && (abs(dx) > TAP_MOVE || abs(dy) > TAP_MOVE)) g_tAxis = (abs(dx) > abs(dy)) ? 'x' : 'y';
+      if (g_tAxis == 'y' && g_tProv >= 0) {         // 列表竖拖滚动(实时)
+        int ns = g_tStartScroll - dy, mx = maxScrollFor(g_tProv);
+        g_scroll[g_tProv] = ns < 0 ? 0 : (ns > mx ? mx : ns);
+      }
+    }
+  } else if (g_tDown) {                             // 无触摸:去抖确认抬起(防单帧 getCount=0 抖动)
+    if (g_touchLostMs == 0) g_touchLostMs = now;
+    else if (now - g_touchLostMs >= RELEASE_MS) {   // 抬起沿 → 判定动作
+      int dx = g_tLastX - g_tx0, dy = g_tLastY - g_ty0;
+      bool scrollable = (g_tProv >= 0 && maxScrollFor(g_tProv) > 0);
+      if (g_tAxis == 'x' && abs(dx) >= SWIPE_MIN)        act = (dx < 0) ? ACT_SWIPE_L : ACT_SWIPE_R;
+      else if (g_tAxis == 'y' && abs(dy) >= SWIPE_MIN) { // 竖滑:不可滚动→导航;可滚动列表仅"滚到顶再下拉"=返回
+        if (!scrollable)                            act = (dy < 0) ? ACT_SWIPE_UP : ACT_SWIPE_DOWN;
+        else if (dy > 0 && g_scroll[g_tProv] <= 0)  act = ACT_SWIPE_DOWN;
+        // 否则:可滚动列表里的竖拖=滚动,不发导航(修复滚动误触发返回)
+      } else if (g_tAxis == 0 && abs(dx) < TAP_MOVE && abs(dy) < TAP_MOVE) {
+        g_tapRow = (g_tProv >= 0) ? rowHitAt(g_tProv, g_ty0) : -1;
+        act = (now - g_lastTapMs < DBL_MS) ? ACT_DOUBLE_TAP : ACT_TAP;
+        g_lastTapMs = now;
+      }
+      g_tDown = false; g_tAxis = 0; g_tProv = -1; g_touchLostMs = 0;   // 抬起即复位
+    }
   }
+  return act;
 }
 
-// 单击派发:列表点行=该会话/空白=置顶;主页=进列表;详情不响应单击
-static void doTap(int row) {
-  if (detailProv >= 0) return;
-  if (g_listView) { if (PROV[page].nsess) enterDetail(page, row >= 0 ? row : 0); }
-  else g_listView = true;           // 主页单击 → 进该端会话列表
+// 动作 → 导航(要改交互/重绑只改这里)
+static void handleAction(TouchAction a) {
+  switch (a) {
+    case ACT_SWIPE_L: case ACT_SWIPE_R: {            // 横滑:详情翻会话,否则切端
+      int dir = (a == ACT_SWIPE_L) ? 1 : -1;
+      if (detailProv >= 0) { int n = PROV[detailProv].nsess; if (n) detailIdx = (detailIdx + dir + n) % n; }
+      else page = (page + dir + 2) % 2;
+      break;
+    }
+    case ACT_SWIPE_UP:                               // 上滑:进入下一级(主页 → 列表)
+      if (detailProv < 0 && !g_listView) g_listView = true;
+      break;
+    case ACT_SWIPE_DOWN:                             // 下滑:返回上一级
+      if (detailProv >= 0) exitDetail();             // 详情 → 列表
+      else if (g_listView) g_listView = false;       // 列表 → 主页
+      break;
+    case ACT_TAP:                                    // 单击:主页 → 列表;列表点行 → 详情
+      if (detailProv >= 0) break;
+      if (g_listView) { if (PROV[page].nsess) enterDetail(page, g_tapRow >= 0 ? g_tapRow : 0); }
+      else g_listView = true;
+      break;
+    case ACT_DOUBLE_TAP:                             // 双击(备选返回;硬件多半接不住)
+      if (detailProv >= 0) exitDetail();
+      else if (g_listView) g_listView = false;
+      break;
+    default: break;
+  }
 }
 
 // 长按 BtnA:详情→列表;列表→主页;主页→列表
@@ -1307,45 +1360,10 @@ void loop() {
 
   // ---- 触摸手势(仅非设置/非语音态)----
   if (!g_inSettings && !g_voice) {
-    auto td = M5.Touch.getDetail();
-    bool touching = M5.Touch.getCount() > 0;     // 用 getCount 自算边沿(这块屏 wasPressed/wasReleased 不可靠)
-    if (touching) { g_tLastX = td.x; g_tLastY = td.y; }
-    if (touching && !g_wasTouch) {                                  // —— 按下沿 ——
-      g_tDown = true; g_tx0 = td.x; g_ty0 = td.y; g_tAxis = 0;
-      g_tProv = curListProv(); g_tStartScroll = (g_tProv >= 0) ? g_scroll[g_tProv] : 0;
-      lastActiveMs = now;
-    } else if (touching && g_tDown) {                              // —— 移动中 ——
-      int dx = g_tLastX - g_tx0, dy = g_tLastY - g_ty0;
-      if (!g_tAxis && (abs(dx) > TAP_MOVE || abs(dy) > TAP_MOVE)) g_tAxis = (abs(dx) > abs(dy)) ? 'x' : 'y';
-      if (g_tAxis == 'y' && g_tProv >= 0) {                        // 竖拖滚动列表
-        int ns = g_tStartScroll - dy;
-        int mx = maxScrollFor(g_tProv); ns = ns < 0 ? 0 : (ns > mx ? mx : ns);
-        g_scroll[g_tProv] = ns;
-      }
-      lastActiveMs = now;
-    } else if (!touching && g_tDown) {                             // —— 抬起沿(用最后有效坐标)——
-      int dx = g_tLastX - g_tx0, dy = g_tLastY - g_ty0;
-      if (g_tAxis == 'x' && abs(dx) >= SWIPE_MIN) swipePage(dx < 0 ? 1 : -1);   // 横滑:切端/翻会话
-      else if (g_tAxis == 'y' && abs(dy) >= SWIPE_MIN) {                          // 竖滑
-        if (dy < 0) { if (detailProv < 0 && !g_listView) g_listView = true; }     // 上滑:主页 → 列表
-        else {                                                                    // 下滑:返回上一级
-          if (detailProv >= 0) exitDetail();                                      // 详情 → 列表
-          else if (g_listView && g_scroll[page] <= 0) g_listView = false;         // 列表(顶部) → 主页
-        }
-      } else if (g_tAxis == 0 && abs(dx) < TAP_MOVE && abs(dy) < TAP_MOVE) {    // 点击 -> 单/双击判定
-        g_dbgTap++; g_dbgDelta = (int)(now - g_lastTapMs);
-        if (now - g_lastTapMs < DBL_MS) { g_lastTapMs = 0; g_pendTapRow = -2; g_dbgDtap++;   // 双击 -> 退出详情/关列表
-          if (detailProv >= 0) exitDetail(); else if (g_listView) g_listView = false; }
-        else { g_lastTapMs = now;                                                // 记一次单击,延迟派发
-          g_pendTapMs = now; g_pendTapRow = (g_tProv >= 0) ? rowHitAt(g_tProv, g_ty0) : -1; }
-      }
-      g_tDown = false; g_tAxis = 0; g_tProv = -1; lastActiveMs = now;
-    }
-    g_wasTouch = touching;
-    // 单击延迟派发(等过双击窗口确认不是双击)
-    if (g_pendTapRow != -2 && now - g_pendTapMs >= DBL_MS) { doTap(g_pendTapRow); g_pendTapRow = -2; }
-  } else {                                   // 进入设置/语音态:清手势残留(防退出后用旧坐标误滚动)
-    g_tDown = false; g_tAxis = 0; g_tProv = -1; g_pendTapRow = -2; g_wasTouch = false;
+    TouchAction act = detectTouchAction(now);
+    if (act != ACT_NONE) { handleAction(act); lastActiveMs = now; }
+  } else {                                   // 进入设置/语音态:清手势残留
+    g_tDown = false; g_tAxis = 0; g_tProv = -1; g_touchLostMs = 0;
   }
 
   static uint32_t bothSince = 0; static bool bothFired = false;   // hold BOTH ~0.4s -> toggle settings
