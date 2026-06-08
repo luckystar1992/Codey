@@ -19,7 +19,8 @@ English documentation: [readme.md](readme.md).
 - 手表每 30 秒从局域网 Companion 服务拉取标准化使用量数据。
 - 使用 StopWatch 真实电量、RTC / 时间、按键、麦克风和 IMU 数据。
 - 内置设置页，可调整 Wi-Fi、亮度和音量。
-- 包含基于 WebSocket 的流式语音识别实验。
+- 通过 WebSocket 把麦克风音频流式送往本地/云端 ASR 引擎，并在设备端显示识别动画
+  （活跃吉祥物 + 声呐环 + 流式转写）。
 
 ## 当前进展
 
@@ -29,9 +30,8 @@ English documentation: [readme.md](readme.md).
 - `hello_stopwatch` 硬件和工具链冒烟测试程序。
 - `stopwatch` 独立秒表程序，支持计圈和圆形进度环。
 - `codey_dash` 主仪表盘固件，包含 Claude / Codex 动画页面。
-- Companion Node.js 服务，提供 `GET /codey/state`。
+- 统一的 Python Companion（单进程：状态 API + ASR WebSocket + Web 管理台），用量数据零联网。
 - 通过 `companion/codey-statusline.sh` 捕获 Claude Code 真实额度数据。
-- 当 statusline 数据不可用时，通过 `ccusage` 作为 Claude 使用量兜底来源。
 - 读取 CodexBar 本地历史缓存，展示 Codex 使用量。
 - Companion 侧计算农历、生肖等表盘信息。
 - `companion/asr_stream.py` 流式 ASR 原型。
@@ -42,7 +42,7 @@ English documentation: [readme.md](readme.md).
 - `sketches/codey_dash/codey_dash.ino` 中仍有硬编码的 Mac hostname 和 fallback IP。
 - 语音输入目前主要完成转写，尚未接入具体命令执行。
 - Codex 使用量依赖 CodexBar 的 macOS 缓存路径；没有该缓存时 Codex 使用量显示为 0。
-- Companion 默认假设本机代理为 `http://127.0.0.1:7892`，可通过 `CODEY_PROXY` 覆盖。
+- 用量数据完全离线读取（statusline 文件 + CodexBar 缓存）；仅可选的豆包 ASR 引擎会联网。
 
 ## 项目结构
 
@@ -52,11 +52,14 @@ Codey/
 ├── asserts/
 │   └── result.png               # 当前仪表盘预览图
 ├── companion/
-│   ├── server.js                # 提供给手表访问的局域网使用量 API
-│   ├── asr_stream.py            # 流式 ASR WebSocket 服务
+│   ├── codey_companion.py       # 统一入口：HTTP 状态 API + ASR WS + Web 管理台
+│   ├── asr_stream.py            # 流式 ASR WebSocket 服务（:8788）
+│   ├── codey/                   # Python 包（state、quota、collect、asr、paste 等）
+│   ├── web/                     # Web 管理台（设备镜像 + 识别历史）
+│   ├── deploy.sh                # 一键启动脚本（预检 + start/stop/status）
 │   ├── codey-statusline.sh      # Claude Code statusline 使用量捕获脚本
 │   ├── models/                  # Whisper / sherpa-onnx 模型文件
-│   └── package.json             # Node Companion 依赖
+│   └── data/                    # ASR 识别历史 JSONL（已 gitignore）
 ├── docs/
 │   └── 开发的基础方法.md          # StopWatch 开发说明
 ├── libs/
@@ -76,9 +79,8 @@ Codey/
 ```text
 Claude Code statusline ─┐
                         ├─ companion (codey_companion.py) ─── HTTP /codey/state ── M5 StopWatch
-ccusage fallback ───────┤
-                        ├─ WebSocket /ws（ASR）──────────── M5 麦克风 PCM
 CodexBar history ───────┤
+                        ├─ WebSocket（ASR :8788）─────────── M5 麦克风 PCM
                         └─ Web 管理台（http://localhost:8787）── 设备镜像 + 历史
 ```
 
@@ -102,18 +104,18 @@ CodexBar history ───────┤
 
 Companion 服务：
 
-- Node.js
-- npm
-- 可选：`bun` 与 `claude-hud`，用于保留原 Claude statusline 渲染
-- 可选：通过 `npx` 调用 `ccusage`，作为 Claude token 使用量兜底来源
+- Python 3（仅用标准库即可提供状态 API + Web 管理台，无需 pip 依赖）
+- 可选：`claude-hud`，用于保留原 Claude statusline 渲染
 - 可选：CodexBar，用于读取 Codex 使用量缓存
+- `companion/deploy.sh` 会先做预检再启动整套服务
 
 语音识别实验：
 
 - Python 3
 - `numpy`、`websockets`、`sherpa-onnx`
 - `companion/models/` 下的 Streaming Zipformer 模型文件
-- 可选：`whisper.cpp` 工具，用于 `server.js` 中的旧版 HTTP ASR 接口
+- 可选：`whisper.cpp` 工具（`whisper-server` / `whisper-cli`），用于批处理
+  `POST /codey/asr` 接口
 
 ## 初始化
 
@@ -128,12 +130,41 @@ arduino-cli core install m5stack:esp32
 arduino-cli lib install M5Unified M5GFX WiFiManager ArduinoJson
 ```
 
-安装 Companion 依赖：
+安装 ASR 依赖（仅语音功能需要）：
 
 ```bash
 cd companion
-npm install
+python3 -m pip install numpy websockets sherpa-onnx
 ```
+
+状态 API 与 Web 管理台无需任何第三方包。`./deploy.sh` 会在启动前替你检查这些依赖。
+
+### ASR 模型（仅语音功能）
+
+语音转写需要一个本地 **sherpa-onnx 流式 Zipformer** 模型。仓库已跟踪模型目录与 `tokens.txt`，
+但 `.onnx` 权重文件被 gitignore——需要自行下载一次放进已有目录，最终结构如下：
+
+```text
+companion/models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/
+├── encoder-epoch-99-avg-1.int8.onnx
+├── decoder-epoch-99-avg-1.onnx
+├── joiner-epoch-99-avg-1.int8.onnx
+└── tokens.txt            # 仓库已自带
+```
+
+从 sherpa-onnx 预训练模型下载名为
+`sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20` 的模型（例如其
+[Hugging Face 仓库](https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20)；
+Hugging Face 慢可用 `https://hf-mirror.com` 镜像）。`companion/models/` 下任意匹配
+`*streaming-zipformer*` 且含 `tokens.txt` 的目录都会被自动识别。
+
+可选项：
+
+- **云端引擎（豆包）** —— 无需下载模型，只在 `.env` 里填凭据（见下文）。
+- **本地标点** —— 在 `companion/models/` 下放置 sherpa `*punct*` 模型目录，可为本地 sherpa
+  结果补标点（不放则跳过）。
+- **Whisper 批处理接口** —— 用于可选的 `POST /codey/asr`：`brew install whisper-cpp` 并把
+  `ggml-small.bin` 放到 `companion/models/`。
 
 如果需要获取 Claude Code 真实额度百分比，请把 Claude Code 的 statusline command 指向本项目
 的包装脚本：
@@ -160,7 +191,8 @@ chmod +x companion/codey-statusline.sh
 
 ```bash
 cd companion
-python3 codey_companion.py
+./deploy.sh            # 预检 + 前台启动；加 `start --bg` 可后台运行
+# 或直接：python3 codey_companion.py
 ```
 
 检查状态 API：
@@ -198,14 +230,22 @@ open http://127.0.0.1:8787/
 
 ## Companion 服务
 
-启动统一的 Companion（单一进程，一体化）：
+推荐用 `deploy.sh` 启动——它会先做预检（Python + ASR 依赖 + sherpa 模型）、从示例自动生成
+`.env`，端口被占用时拒绝启动：
 
 ```bash
 cd companion
-python3 codey_companion.py
+./deploy.sh             # 预检 + 前台启动（Ctrl-C 退出）
+./deploy.sh start --bg  # 后台启动（日志 data/companion.log，PID data/companion.pid）
+./deploy.sh status      # 查看 :8787 / :8788 状态
+./deploy.sh restart     # 后台重启
+./deploy.sh stop        # 停止
 ```
 
-启动后包含：
+可用 `CODEY_PORT`、`CODEY_ASR_PORT`、`PYTHON` 覆盖端口/解释器。也可直接运行入口：
+`python3 codey_companion.py`。
+
+单一进程同时提供：
 - HTTP 状态 API（`:8787`，对应 `GET /codey/state`）
 - ASR WebSocket（`:8788`，接收 16 kHz 单声道 PCM）
 - Web 管理台（`http://<mac>:8787/`，设备镜像 + 识别历史）
@@ -232,6 +272,22 @@ python3 asr_stream.py
 `asr_stream.py` 是手表连接的流式 ASR 服务（端口 `:8788`）。启动时打印已选引擎，并自动加载
 `companion/.env`（将 `companion/.env.example` 复制为 `.env` 并填写凭据）。
 
+语音输入桥与设备端识别动画移植自
+[meme（作者 EthanM2025）](https://github.com/EthanM2025/meme)——详见 [致谢](#致谢)。
+
+**配置** —— 复制示例 env 文件（启动时自动加载）并按需编辑：
+
+```bash
+cp companion/.env.example companion/.env
+```
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `CODEY_ASR_ENGINE` | `auto` | `sherpa`（本地离线）、`doubao`（云端）或 `auto` |
+| `CODEY_PASTE` | `1` | 把最终转写粘贴到当前聚焦的 macOS 窗口 |
+| `CODEY_PASTE_AUTO_ENTER` | `0` | 粘贴后按回车（自动提交） |
+| `DOUBAO_API_KEY` / `DOUBAO_APP_ID` | — | 仅 `doubao` 引擎需要 |
+
 **引擎** — 由 `CODEY_ASR_ENGINE` 控制（默认 `auto`）：
 
 - `sherpa` — 本地 sherpa-onnx Zipformer；离线可用。
@@ -249,6 +305,9 @@ python3 asr_stream.py
 
 **chime** — `/codey/state` 中的 `chime: {agent, seq}` 在 Claude/Codex 一轮对话完成时更新
 （`seq` 每次完成递增，其余时候为 `null`）。固件检测到 seq 变化时播放提示音。
+
+**设备端动画** — 录音过程中，手表显示对应端的吉祥物进入随麦克风电平呼吸的活跃态，外围环绕
+声呐「聆听」环，上方流式显示转写文本，下方为 `● LISTENING…` / `RECOGNIZING…` 状态行。
 
 **可选本地标点** — 在 `companion/models/` 下放置 sherpa `*punct*` 模型目录，可为本地
 sherpa 转写结果补充标点；不放置则跳过标点步骤。
@@ -298,10 +357,26 @@ sherpa 转写结果补充标点；不放置则跳过标点步骤。
 - 主仪表盘使用 PSRAM canvas 渲染，避免动画闪烁。
 - StopWatch 开发流程详见 [docs/开发的基础方法.md](docs/开发的基础方法.md)。
 
+## 致谢
+
+Codey 的语音相关能力建立在开源项目
+[**meme**（作者 EthanM2025）](https://github.com/EthanM2025/meme)（MIT 许可）之上——这是一个
+面向同款 M5Stack StopWatch 的姊妹项目。从 meme 借鉴/移植而来：
+
+- **语音输入桥** —— 流式 ASR 到剪贴板的完整链路：最终转写自动粘贴到当前聚焦的 macOS 窗口、
+  豆包（火山引擎）流式 ASR（带标点/ITN）、xiaozhi 风格 WebSocket 协议、submit/clear 控制，
+  以及完成提示音。
+- **设备端识别动画与交互** —— 圆屏上「说话 → 实时转写 + 吉祥物动画」的体验。Codey 在自己的
+  M5GFX 渲染栈上复刻了 meme 的思路：对应端的吉祥物进入随麦克风电平呼吸的活跃态，外围环绕
+  声呐「聆听」环，上方流式显示转写文本。
+
+感谢 EthanM2025 将 meme 开源。原始实现见
+[meme 仓库](https://github.com/EthanM2025/meme)。
+
 ## 下一步计划
 
 - 将 Mac hostname、fallback IP、服务端口移入手表端设置流程。
 - 用真实 Claude / Codex 待审阅任务数据替代 `pending_reviews` 占位值。
 - 将语音转写接入可执行的手表命令。
-- 为 Companion 增加 launchd 或 pm2 常驻运行配置。
+- 为 Companion 增加 launchd 常驻运行配置（`deploy.sh` 已能 start/stop）。
 - 增加简单模拟器或截图测试，避免仪表盘布局回归。
