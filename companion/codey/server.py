@@ -81,7 +81,7 @@ class App:
                 urls = ngrok_api.public_urls(ngrok_api.fetch(), STATE_PORT, ASR_PORT)
                 with self.lock:
                     self.ngrok = urls                              # 整体替换(不可变更新)
-            except Exception as e:                                 # ngrok 未跑时静默,不影响服务
+            except Exception as e:                                 # fetch() 失败已返回 {};此处仅兜底 public_urls 解析异常
                 print("ngrok refresh failed:", e)
             time.sleep(NGROK_REFRESH_MS / 1000)
 
