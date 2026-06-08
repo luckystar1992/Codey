@@ -1,6 +1,12 @@
 # companion/codey/envcfg.py
-"""零依赖 .env 加载 + 语音桥配置读取。"""
+"""零依赖 .env 加载 + 语音桥配置读取。
+
+select_engine/paste_enabled/auto_enter 保留 env= 参数:显式传入 env 时按 env 算
+(老测试/老调用不变);env 为 None 时改走 config.get(...)(config.json > .env > 默认)。
+"""
 import os
+
+from . import config
 
 
 def parse_env_text(text):
@@ -38,7 +44,12 @@ def load_dotenv(path=None):
 
 
 def select_engine(env=None):
-    env = os.environ if env is None else env
+    # env=None:走 config(asr_engine + doubao_api_key);显式 env:按 env 算(兼容)。
+    if env is None:
+        eng = (config.get("asr_engine") or "auto").strip().lower()
+        if eng in ("sherpa", "doubao"):
+            return eng
+        return "doubao" if (config.get("doubao_api_key") or "").strip() else "sherpa"
     eng = (env.get("CODEY_ASR_ENGINE") or "auto").strip().lower()
     if eng in ("sherpa", "doubao"):
         return eng
@@ -46,10 +57,12 @@ def select_engine(env=None):
 
 
 def paste_enabled(env=None):
-    env = os.environ if env is None else env
+    if env is None:
+        return bool(config.get("paste"))
     return (env.get("CODEY_PASTE") or "1").strip() not in ("0", "false", "no")
 
 
 def auto_enter(env=None):
-    env = os.environ if env is None else env
+    if env is None:
+        return bool(config.get("paste_auto_enter"))
     return (env.get("CODEY_PASTE_AUTO_ENTER") or "0").strip() in ("1", "true", "yes")

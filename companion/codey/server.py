@@ -8,12 +8,13 @@ from urllib.parse import urlparse, parse_qs
 
 from . import asr_history
 from . import collect
+from . import config
 from . import ngrok_api
 from .asr import WhisperManager
 from .chime import ChimeState
 from .state import build_state
 
-REFRESH_MS = 2000
+REFRESH_MS = 2000                # 仅作默认参考;实际间隔实时读 config.get("refresh_ms")
 NGROK_REFRESH_MS = 15000          # ngrok 公网地址轮询(免费档 ASR 地址随机)
 STATE_PORT = int(os.environ.get("CODEY_PORT") or 8787)
 ASR_PORT = int(os.environ.get("CODEY_ASR_PORT") or 8788)
@@ -73,7 +74,7 @@ class App:
                         self.tok_rate[pid] = {"prev": cur, "val": collect.tokens_per_min(prev, cur)}
             except Exception as e:                                 # 单次失败不影响服务
                 print("collect_sessions failed:", e)
-            time.sleep(REFRESH_MS / 1000)
+            time.sleep(max(0.5, config.get("refresh_ms") / 1000))  # 实时可配,下界 0.5s
 
     def _ngrok_loop(self):
         while True:
@@ -90,7 +91,7 @@ class App:
             cache, tok = self.session_cache, dict(self.tok_rate)
             chime_event = self.chime.event
             asr_url = self.ngrok.get("asr_url", "")
-        return build_state(cache, tok, chime_event, asr_url=asr_url)
+        return build_state(cache, tok, chime_event, asr_url=asr_url, display=config.get("display"))
 
 
 def make_handler(app):

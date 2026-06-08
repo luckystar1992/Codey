@@ -38,6 +38,24 @@ class TestState(unittest.TestCase):
             st = state_mod.build_state(cache, tok, asr_url="wss://ab12cd.ngrok-free.app")
         self.assertEqual(st["asr_url"], "wss://ab12cd.ngrok-free.app")
 
+    def test_display_threads_through(self):
+        cache = {"claude": [], "codex": []}
+        tok = {"claude": {"prev": None, "val": 0}, "codex": {"prev": None, "val": 0}}
+        disp = {"columns": {"status": True, "memory": False}, "providers": {"claude": True, "codex": True}}
+        with mock.patch.object(state_mod, "read_real_usage", return_value=None), \
+             mock.patch.object(state_mod, "read_codex_usage", return_value=None):
+            st = state_mod.build_state(cache, tok, display=disp)
+        self.assertEqual(st["display"]["columns"]["status"], True)
+        self.assertEqual(st["display"]["columns"]["memory"], False)
+
+    def test_display_defaults_empty(self):
+        cache = {"claude": [], "codex": []}
+        tok = {"claude": {"prev": None, "val": 0}, "codex": {"prev": None, "val": 0}}
+        with mock.patch.object(state_mod, "read_real_usage", return_value=None), \
+             mock.patch.object(state_mod, "read_codex_usage", return_value=None):
+            st = state_mod.build_state(cache, tok)
+        self.assertEqual(st["display"], {})
+
     def test_sort_active_first(self):
         cache = {"claude": [
             {"id": "a", "status": "waiting", "context_pct": 5, "tokens_total": 0, "git": {"added": 0, "modified": 0}, "model": ""},

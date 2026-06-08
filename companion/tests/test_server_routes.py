@@ -1,13 +1,30 @@
-import os, tempfile, unittest
+import json, os, tempfile, unittest
 from codey import server
+from codey import config as cfg
 
 
 class TestServerRoutes(unittest.TestCase):
+    def setUp(self):
+        # 隔离每个测试到独立的 config.json,避免污染真实 companion/data/config.json
+        self._dir = tempfile.mkdtemp()
+        self._prev_cfg = cfg.CONFIG_PATH
+        cfg.CONFIG_PATH = os.path.join(self._dir, "config.json")
+
+    def tearDown(self):
+        cfg.CONFIG_PATH = self._prev_cfg
+
     def test_state_includes_asr_url_default_empty(self):
         app = server.App()
         st = app.state()
         self.assertIn("asr_url", st)
         self.assertEqual(st["asr_url"], "")
+
+    def test_state_includes_display_columns(self):
+        app = server.App()
+        st = app.state()
+        self.assertIn("display", st)
+        self.assertIn("columns", st["display"])
+        self.assertTrue(st["display"]["columns"]["status"])
 
     def test_parse_history_n(self):
         self.assertEqual(server.parse_history_n("/codey/history"), 100)

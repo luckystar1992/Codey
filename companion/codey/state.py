@@ -16,7 +16,7 @@ def _num(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
-def build_state(session_cache, tok_rate, chime=None, asr_url=""):
+def build_state(session_cache, tok_rate, chime=None, asr_url="", display=None):
     now = int(time.time())
     real = read_real_usage()
     five = real.get("five_hour") if real else None
@@ -74,5 +74,6 @@ def build_state(session_cache, tok_rate, chime=None, asr_url=""):
         "stale": not (real and real.get("fresh")) and not five_ok,
         "battery": {"pct": 0, "charging": False},   # 设备用自身真实电量
         "asr_url": asr_url,                          # ngrok 随机 ASR 公网地址(远程模式),否则 ""
+        "display": display or {},                     # 设备页面显示项(列/端开关),空={}
         "providers": [claude, codex],
     }
