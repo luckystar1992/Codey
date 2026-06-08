@@ -8,11 +8,15 @@ from urllib.parse import urlparse, parse_qs
 
 from . import asr_history
 from . import collect
+from . import ngrok_api
 from .asr import WhisperManager
 from .chime import ChimeState
 from .state import build_state
 
 REFRESH_MS = 2000
+NGROK_REFRESH_MS = 15000          # ngrok 公网地址轮询(免费档 ASR 地址随机)
+STATE_PORT = int(os.environ.get("CODEY_PORT") or 8787)
+ASR_PORT = int(os.environ.get("CODEY_ASR_PORT") or 8788)
 MAX_ASR_BYTES = 8_000_000
 HISTORY_MAX = 500
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")   # companion/web
@@ -45,6 +49,7 @@ class App:
     def __init__(self):
         self.session_cache = {"claude": [], "codex": []}
         self.tok_rate = {"claude": {"prev": None, "val": 0}, "codex": {"prev": None, "val": 0}}
+        self.ngrok = {"state_url": "", "asr_url": ""}   # 整体替换,不就地改(见 _ngrok_loop)
         self.lock = threading.Lock()
         self.chime = ChimeState()
         self.whisper = WhisperManager()
@@ -52,6 +57,7 @@ class App:
     def start_background(self):
         self.whisper.start()
         threading.Thread(target=self._refresh_loop, daemon=True).start()
+        threading.Thread(target=self._ngrok_loop, daemon=True).start()
 
     def _refresh_loop(self):
         while True:
@@ -69,11 +75,22 @@ class App:
                 print("collect_sessions failed:", e)
             time.sleep(REFRESH_MS / 1000)
 
+    def _ngrok_loop(self):
+        while True:
+            try:
+                urls = ngrok_api.public_urls(ngrok_api.fetch(), STATE_PORT, ASR_PORT)
+                with self.lock:
+                    self.ngrok = urls                              # 整体替换(不可变更新)
+            except Exception as e:                                 # ngrok 未跑时静默,不影响服务
+                print("ngrok refresh failed:", e)
+            time.sleep(NGROK_REFRESH_MS / 1000)
+
     def state(self):
         with self.lock:
             cache, tok = self.session_cache, dict(self.tok_rate)
             chime_event = self.chime.event
-        return build_state(cache, tok, chime_event)
+            asr_url = self.ngrok.get("asr_url", "")
+        return build_state(cache, tok, chime_event, asr_url=asr_url)
 
 
 def make_handler(app):

@@ -3,6 +3,12 @@ from codey import server
 
 
 class TestServerRoutes(unittest.TestCase):
+    def test_state_includes_asr_url_default_empty(self):
+        app = server.App()
+        st = app.state()
+        self.assertIn("asr_url", st)
+        self.assertEqual(st["asr_url"], "")
+
     def test_parse_history_n(self):
         self.assertEqual(server.parse_history_n("/codey/history"), 100)
         self.assertEqual(server.parse_history_n("/codey/history?n=20"), 20)

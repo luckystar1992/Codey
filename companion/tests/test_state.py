@@ -28,6 +28,15 @@ class TestState(unittest.TestCase):
         self.assertEqual(st["providers"][1]["sessions"], [])
         self.assertIn("ts", st)
         self.assertIn("battery", st)
+        self.assertEqual(st["asr_url"], "")
+
+    def test_asr_url_threads_through(self):
+        cache = {"claude": [], "codex": []}
+        tok = {"claude": {"prev": None, "val": 0}, "codex": {"prev": None, "val": 0}}
+        with mock.patch.object(state_mod, "read_real_usage", return_value=None), \
+             mock.patch.object(state_mod, "read_codex_usage", return_value=None):
+            st = state_mod.build_state(cache, tok, asr_url="wss://ab12cd.ngrok-free.app")
+        self.assertEqual(st["asr_url"], "wss://ab12cd.ngrok-free.app")
 
     def test_sort_active_first(self):
         cache = {"claude": [
