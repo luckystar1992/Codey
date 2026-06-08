@@ -259,7 +259,14 @@ The single process serves:
 - ASR WebSocket on `:8788` (receives 16 kHz mono PCM)
 - Web admin UI at `http://<mac>:8787/` (device mirror + recognition history)
 
-The web admin shows:
+The web admin is a tabbed page (**Welcome · Tutorial · Config · Device mirror · ASR history**):
+- **Welcome**: project intro + a link to Star the repo on GitHub.
+- **Tutorial**: a 5-step first-time setup walkthrough (device + macOS).
+- **Config** (`/codey/config`): edit runtime settings live — ASR engine, paste/auto-enter,
+  Doubao credentials, usage refresh interval, and **which columns/fields the watch shows**
+  (list columns Status/Model/Ctx/Tokens/Memory/Turn + which providers' pages are enabled).
+  Saved to `companion/data/config.json` (gitignored), layered as **config.json > .env >
+  defaults**; the watch reads the display choices from `/codey/state.display`.
 - **Device mirror** (`/sim`): live watch state via polling `/codey/state`
 - **ASR history** (`/codey/history`): recognition history from `companion/data/asr_history.jsonl`
 

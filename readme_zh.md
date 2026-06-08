@@ -250,7 +250,13 @@ cd companion
 - ASR WebSocket（`:8788`，接收 16 kHz 单声道 PCM）
 - Web 管理台（`http://<mac>:8787/`，设备镜像 + 识别历史）
 
-Web 管理台展示：
+Web 管理台是多标签页面（**欢迎 · 教学 · 配置 · 设备镜像 · 识别历史**）：
+- **欢迎**：项目简介 + 引导去 GitHub 给仓库点 Star。
+- **教学**：首次配置 5 步走（设备 + macOS）。
+- **配置**（`/codey/config`）：运行期改设置即时生效——ASR 引擎、粘贴/自动回车、豆包凭据、
+  用量刷新间隔，以及**设备显示哪些列/字段**（列表列 状态/模型/Ctx/Tokens/内存/轮次 + 启用哪一端的页面）。
+  存到 `companion/data/config.json`（已 gitignore），分层覆盖 **config.json > .env > 默认**；
+  手表从 `/codey/state.display` 读取显示项配置。
 - **设备镜像**（`/sim`）：实时轮询 `/codey/state` 显示手表状态
 - **识别历史**（`/codey/history`）：从 `companion/data/asr_history.jsonl` 读取识别记录
 
