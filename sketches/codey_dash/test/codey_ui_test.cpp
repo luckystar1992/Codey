@@ -80,6 +80,51 @@ int main() {
   parseWssHost("wss://abcdefgh/x", tiny, sizeof(tiny));
   assert(!strcmp(tiny, "abcd"));   // truncated to n-1, NUL-terminated
 
+  // ---- dispDefault: 缺省全开 ----
+  {
+    DispCfg d = dispDefault();
+    for (int i = 0; i < DISP_NCOL; i++)  assert(d.col[i]);
+    for (int i = 0; i < DISP_NPROV; i++) assert(d.prov[i]);
+  }
+
+  // ---- layoutColumns: 动态列布局 ----
+  {
+    int idx[DISP_NCOL], xs[DISP_NCOL];
+
+    // 全开 → 复现原始 6 列起点 46,112,204,242,300,358(默认行为不变的回归锁)
+    bool all6[DISP_NCOL] = { true, true, true, true, true, true };
+    int n = layoutColumns(all6, idx, xs);
+    assert(n == 6);
+    int wantIdx6[6] = { DC_STATUS, DC_MODEL, DC_CTX, DC_TOKENS, DC_MEMORY, DC_TURN };
+    int wantX6[6]   = { 46, 112, 204, 242, 300, 358 };
+    for (int k = 0; k < 6; k++) { assert(idx[k] == wantIdx6[k]); assert(xs[k] == wantX6[k]); }
+
+    // memory+turn 关 → 4 列重新铺满并居中(块仍以 224 为中线)
+    bool noMemTurn[DISP_NCOL] = { true, true, true, true, false, false };
+    n = layoutColumns(noMemTurn, idx, xs);
+    assert(n == 4);
+    int wantIdx4[4] = { DC_STATUS, DC_MODEL, DC_CTX, DC_TOKENS };
+    int wantX4[4]   = { 97, 163, 255, 293 };   // start 224-(66+92+38+58)/2=97,逐列累加槽宽
+    for (int k = 0; k < 4; k++) { assert(idx[k] == wantIdx4[k]); assert(xs[k] == wantX4[k]); }
+    // 居中对称:块中线 = (首槽起点 + 末槽末端)/2 ≈ 224
+    assert((xs[0] + (xs[3] + DISP_COL_W[DC_TOKENS])) / 2 == 224);
+
+    // 仅 status+tokens → 2 列居中(start 224-(66+58)/2=162)
+    bool stTok[DISP_NCOL] = { true, false, false, true, false, false };
+    n = layoutColumns(stTok, idx, xs);
+    assert(n == 2);
+    assert(idx[0] == DC_STATUS && idx[1] == DC_TOKENS);
+    assert(xs[0] == 162 && xs[1] == 228);   // 162 + 66 = 228
+
+    // 仅 1 列(turn)→ 居中;0 列 → n==0 不崩
+    bool turnOnly[DISP_NCOL] = { false, false, false, false, false, true };
+    n = layoutColumns(turnOnly, idx, xs);
+    assert(n == 1 && idx[0] == DC_TURN && xs[0] == 224 - DISP_COL_W[DC_TURN] / 2);
+    bool none[DISP_NCOL] = { false, false, false, false, false, false };
+    n = layoutColumns(none, idx, xs);
+    assert(n == 0);
+  }
+
   (void)S;
   printf("codey_ui tests: ALL PASS\n");
   return 0;

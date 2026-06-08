@@ -48,6 +48,11 @@ static Prov PROV[2] = {
 static int g_batt = 76;             // refreshed from the real battery each second
 static int g_clkH = 0, g_clkM = 0;  // refreshed from the on-board RTC each second
 
+// companion 下发的显示配置(GET /codey/state -> "display");缺省全开 = 旧行为不变。
+// 单写者:仅 netTask 在 fetchState() 里整体替换;主loop 渲染只读。结构是 POD,赋值是逐字段拷贝;
+// 读到“半写”状态最坏只是某帧少/多一列(下帧即纠正),不会越界/崩溃,故沿用其它 g_* 状态的无锁单写模式。
+static DispCfg g_disp = dispDefault();
+
 static inline uint16_t c565(uint32_t rgb) {
   uint8_t r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
   return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
@@ -622,6 +627,7 @@ static void drawVoiceOverlay() {
 static void renderUsagePage(int provIdx);
 static void renderListPage(int provIdx);
 static void renderDetailPage();
+static void ensureProvVisible();   // provider-skip:把 page 吸附到启用的 provider(定义在导航区)
 
 // detail 视图状态:active<0 表示不在详情;否则 detailProv(0/1) + detailIdx
 static int detailProv = -1, detailIdx = 0;
@@ -650,6 +656,7 @@ static bool     g_forceRender = false;       // 动作发生时强制立即重�
 // ---------- compose one page ----------
 static void render() {
   if (g_voice) { drawVoiceOverlay(); cv.pushSprite(0, 0); return; }
+  ensureProvVisible();                       // 当前页落在被禁用 provider 上 → 吸附到启用页
   if (detailProv >= 0)      renderDetailPage();
   else if (g_listView)      renderListPage(page);
   else                      renderUsagePage(page);
@@ -700,8 +707,14 @@ static void renderListPage(int provIdx) {
     return;
   }
 
-  // 表格列(左对齐,贴合圆屏可用宽);全 ASCII → FreeMono 无方框
-  const int colDot = 46, colSt = 58, colModel = 112, colCtx = 204, colTok = 242, colMem = 300, colTurn = 358;
+  // 动态列布局:companion 下发的列开关 → 启用列的有序索引 + 槽起点 x(纯函数,host 已测)。
+  // 全开 → 复现原固定列 46/112/204/242/300/358;少列 → 重新铺满并以屏中线居中。
+  int colIdx[DISP_NCOL], colX[DISP_NCOL];
+  int ncol = layoutColumns(g_disp.col, colIdx, colX);
+  if (ncol == 0) { ncol = 1; colIdx[0] = DC_STATUS; colX[0] = DISP_BAND_CENTER - DISP_COL_W[DC_STATUS] / 2; }  // 全关兜底:至少保留状态
+  // STATUS 列的状态点固定画在该列槽起点;状态词右移 DISP_STATUS_WORD_DX。
+  int statusSlotX = -1;
+  for (int k = 0; k < ncol; k++) if (colIdx[k] == DC_STATUS) statusSlotX = colX[k];
 
   // 居中几何:整张表(表头 + 可见行)以屏幕中线 CY 为对称轴居中
   const int HEAD_H = 26;
@@ -716,15 +729,14 @@ static void renderListPage(int provIdx) {
   g_listBandTop = bandTop; g_listBandH = bandH; g_listOff = off;            // 供 rowHitAt 命中检测
   g_listVisN = visN; g_listAuto = autoScroll;
 
-  // 表头(居中块顶部)
+  // 表头(居中块顶部):按启用列绘制各自标签;STATUS 标签随状态词偏移对齐其文本列。
+  static const char* COL_HEAD[DISP_NCOL] = { "St", "Model", "Ctx", "Tok", "Mem", "Turn" };
   cv.setFont(&fonts::FreeMono9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_left);
   cv.setTextColor(c565(0x6d6f75));
-  cv.drawString("St",    colSt,    headY);
-  cv.drawString("Model", colModel, headY);
-  cv.drawString("Ctx",   colCtx,   headY);
-  cv.drawString("Tok",   colTok,   headY);
-  cv.drawString("Mem",   colMem,   headY);
-  cv.drawString("Turn",  colTurn,  headY);
+  for (int k = 0; k < ncol; k++) {
+    int hx = (colIdx[k] == DC_STATUS) ? colX[k] + DISP_STATUS_WORD_DX : colX[k];
+    cv.drawString(COL_HEAD[colIdx[k]], hx, headY);
+  }
   cv.drawFastHLine(46, bandTop - 3, SIZE - 92, c565(0x2a2c31));
 
   // 行(居中静态;>LIST_MAX_VIS 时上下循环滚动,双份无缝拼接;裁剪到行带)
@@ -739,22 +751,49 @@ static void renderListPage(int provIdx) {
       uint16_t dc = c565(statusDotColor(st));
       int my = y + ROW_H / 2;
       if (st == ST_EXECUTING)
-        cv.fillRoundRect(46, y + 3, SIZE - 92, ROW_H - 5, 6, c565(shade(color, -0.82f)));
-      if (st == ST_EXECUTING) cv.fillSmoothCircle(colDot, my, 5, dc);   // 实心=运行
-      else { cv.drawCircle(colDot, my, 5, dc); cv.drawCircle(colDot, my, 4, dc); }   // 空心环=其余
+        cv.fillRoundRect(46, y + 3, SIZE - 92, ROW_H - 5, 6, c565(shade(color, -0.82f)));  // 高亮条:全行宽,与列数无关
+      // 状态点:仅当 STATUS 列启用时画(其余列不绘点)。
+      if (statusSlotX >= 0) {
+        if (st == ST_EXECUTING) cv.fillSmoothCircle(statusSlotX, my, 5, dc);   // 实心=运行
+        else { cv.drawCircle(statusSlotX, my, 5, dc); cv.drawCircle(statusSlotX, my, 4, dc); }   // 空心环=其余
+      }
       cv.setFont(&fonts::FreeMono9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_left);
-      cv.setTextColor(dc);              cv.drawString(statusShort(st), colSt, my);
-      char md[16]; modelShort(s.model, md, sizeof(md));      // 紧凑:去空格(Opus 4.8 -> Opus4.8)
-      for (char* a = md, *b = md; ; ++a) { if (*a != ' ') *b++ = *a; if (!*a) break; }
-      cv.setTextColor(c565(0x8a8d94));  cv.drawString(md, colModel, my);
-      char cb[8]; snprintf(cb, sizeof(cb), "%d%%", s.ctxPct);
-      cv.setTextColor(c565(ctxColor(s.ctxPct))); cv.drawString(cb, colCtx, my);
-      char tb[12]; fmtTokens(s.tokTotal, tb, sizeof(tb));
-      cv.setTextColor(c565(0xe6e8ec));  cv.drawString(tb, colTok, my);
-      char mb[10]; fmtMem(s.memKb, mb, sizeof(mb));
-      cv.setTextColor(c565(0x8a8d94));  cv.drawString(mb, colMem, my);
-      char rb[8]; snprintf(rb, sizeof(rb), "%d", s.turn);
-      cv.setTextColor(c565(0x8a8d94));  cv.drawString(rb, colTurn, my);
+      for (int k = 0; k < ncol; k++) {
+        int cx = colX[k];
+        switch (colIdx[k]) {
+          case DC_STATUS: {
+            cv.setTextColor(dc); cv.drawString(statusShort(st), cx + DISP_STATUS_WORD_DX, my);
+            break;
+          }
+          case DC_MODEL: {
+            char md[16]; modelShort(s.model, md, sizeof(md));      // 紧凑:去空格(Opus 4.8 -> Opus4.8)
+            for (char* a = md, *b = md; ; ++a) { if (*a != ' ') *b++ = *a; if (!*a) break; }
+            cv.setTextColor(c565(0x8a8d94)); cv.drawString(md, cx, my);
+            break;
+          }
+          case DC_CTX: {
+            char cb[8]; snprintf(cb, sizeof(cb), "%d%%", s.ctxPct);
+            cv.setTextColor(c565(ctxColor(s.ctxPct))); cv.drawString(cb, cx, my);
+            break;
+          }
+          case DC_TOKENS: {
+            char tb[12]; fmtTokens(s.tokTotal, tb, sizeof(tb));
+            cv.setTextColor(c565(0xe6e8ec)); cv.drawString(tb, cx, my);
+            break;
+          }
+          case DC_MEMORY: {
+            char mb[10]; fmtMem(s.memKb, mb, sizeof(mb));
+            cv.setTextColor(c565(0x8a8d94)); cv.drawString(mb, cx, my);
+            break;
+          }
+          case DC_TURN: {
+            char rb[8]; snprintf(rb, sizeof(rb), "%d", s.turn);
+            cv.setTextColor(c565(0x8a8d94)); cv.drawString(rb, cx, my);
+            break;
+          }
+          default: break;
+        }
+      }
     }
   }
   cv.clearClipRect();
@@ -789,12 +828,13 @@ static void renderDetailPage() {
   cv.fillCircle(CX - tWid / 2 - 11, 44, 4, c565(color));
   cv.setTextColor(c565(0xcfd2d8)); cv.drawString(nm, CX, 44);
 
-  // 第二行:model · 已运行时长(efontCN 字体能渲染 ·,不再是方框)
+  // 第二行:model · 已运行时长(efontCN 字体能渲染 ·,不再是方框)。MODEL 列关 → 只显时长。
   long nowE = time(nullptr); bool epochOK = nowE > 1700000000L;
   long elapsed = (epochOK && s.startedAt > 0) ? (nowE - s.startedAt) : 0;
-  char md[24]; modelShort(s.model, md, sizeof(md));
   char el[16]; fmtElapsed(elapsed, el, sizeof(el));
-  char l2[48]; snprintf(l2, sizeof(l2), "%s · %s", md, el);
+  char l2[48];
+  if (g_disp.col[DC_MODEL]) { char md[24]; modelShort(s.model, md, sizeof(md)); snprintf(l2, sizeof(l2), "%s · %s", md, el); }
+  else                        snprintf(l2, sizeof(l2), "%s", el);
   cv.setFont(&fonts::efontCN_16); cv.setTextDatum(middle_center);
   cv.setTextColor(c565(0x7d828a)); cv.drawString(l2, CX, 68);
 
@@ -807,14 +847,27 @@ static void renderDetailPage() {
   uint16_t sw = c565(st == ST_EXECUTING ? shade(color, 0.25f) : st == ST_THINKING ? 0xffd479 : 0x8b9097);
   cv.setTextColor(sw); cv.drawString(statusWord(st), CX, 180);
 
-  // 三宫格:ctx / turn / tokens
+  // 数据宫格:CTX / TURN / TOKENS / MEMORY,各自由对应列开关控制,启用块均分居中(块越少越居中)。
+  // 注:原详情页只有 CTX/TURN/TOKENS 三块;memory 列默认开 → 全开时新增 MEM 块(共 4 块,
+  //     span=414px,在 466 圆屏可视范围内,左右各余 ~26px)。这是相对旧固件唯一的“默认外观”变化,
+  //     符合需求「memory off → 不显示 memory 块」的语义(memory 作为可隐藏的详情块存在)。
   char ctxv[8]; snprintf(ctxv, sizeof(ctxv), "%d%%", s.ctxPct);
   char turnv[8]; snprintf(turnv, sizeof(turnv), "%d", s.turn);
   char tokv[12]; fmtTokens(s.tokTotal, tokv, sizeof(tokv));   // K千/W万/B十亿
-  const int tw = 96, th = 50, gap = 10, ty = 228;
-  drawStatTile(CX - tw - gap, ty, tw, th, "CTX",    ctxv,  color);
-  drawStatTile(CX,            ty, tw, th, "TURN",   turnv, color);
-  drawStatTile(CX + tw + gap, ty, tw, th, "TOKENS", tokv,  color);
+  char memv[10]; fmtMem(s.memKb, memv, sizeof(memv));
+  struct Tile { const char* label; const char* value; };
+  Tile tiles[4]; int nt = 0;
+  if (g_disp.col[DC_CTX])    tiles[nt++] = { "CTX",    ctxv };
+  if (g_disp.col[DC_TURN])   tiles[nt++] = { "TURN",   turnv };
+  if (g_disp.col[DC_TOKENS]) tiles[nt++] = { "TOKENS", tokv };
+  if (g_disp.col[DC_MEMORY]) tiles[nt++] = { "MEM",    memv };
+  if (nt > 0) {
+    const int tw = 96, th = 50, gap = 10, ty = 228;
+    int span = nt * tw + (nt - 1) * gap;
+    int cx0 = CX - span / 2 + tw / 2;                       // 第一块的圆心 x
+    for (int k = 0; k < nt; k++)
+      drawStatTile(cx0 + k * (tw + gap), ty, tw, th, tiles[k].label, tiles[k].value, color);
+  }
 
   // 任务/agent 名称(efontCN 可渲染中文与 ·;超宽 → 跑马灯循环)
   char buf[96];
@@ -1275,6 +1328,27 @@ static void fetchState() {
       g_stale = doc["stale"] | false;
       const char* a = doc["asr_url"] | "";           // 远程下发的 wss:// ASR url(局域网为空)
       strncpy(g_asrUrl, a, sizeof(g_asrUrl) - 1); g_asrUrl[sizeof(g_asrUrl) - 1] = 0;
+
+      // display 配置:列开关 + provider 开关;缺省/缺键 → true(旧 companion 行为不变)。
+      // 先在局部组装,最后一次性赋给 g_disp(单写者:netTask;主loop 只读)。
+      {
+        DispCfg d = dispDefault();
+        JsonVariantConst disp = doc["display"];
+        if (!disp.isNull()) {
+          JsonVariantConst cols = disp["columns"];
+          d.col[DC_STATUS] = cols["status"] | true;
+          d.col[DC_MODEL]  = cols["model"]  | true;
+          d.col[DC_CTX]    = cols["ctx"]    | true;
+          d.col[DC_TOKENS] = cols["tokens"] | true;
+          d.col[DC_MEMORY] = cols["memory"] | true;
+          d.col[DC_TURN]   = cols["turn"]   | true;
+          JsonVariantConst pv = disp["providers"];
+          d.prov[0] = pv["claude"] | true;
+          d.prov[1] = pv["codex"]  | true;
+        }
+        g_disp = d;
+      }
+
       for (JsonObject pr : doc["providers"].as<JsonArray>()) {
         const char* id = pr["id"] | "";
         int i = (strcmp(id, "claude") == 0) ? 0 : (strcmp(id, "codex") == 0 ? 1 : -1);
@@ -1408,6 +1482,22 @@ static void settingsButtons() {
 // ---- 触摸手势辅助函数 ----
 static int curListProv() { return (detailProv < 0 && g_listView) ? page : -1; }
 
+// provider 页是否启用(companion display.providers);两者全关时兜底视作全开(至少显示一个)。
+static bool provEnabled(int idx) {
+  if (!g_disp.prov[0] && !g_disp.prov[1]) return true;   // 全关兜底:不跳过,正常显示
+  return g_disp.prov[idx];
+}
+// 从 page 起按 dir(±1)找下一个启用的 provider 页;最多绕一圈,找不到则原地不动。
+static int nextProv(int from, int dir) {
+  for (int step = 1; step <= DISP_NPROV; step++) {
+    int cand = ((from + dir * step) % DISP_NPROV + DISP_NPROV) % DISP_NPROV;
+    if (provEnabled(cand)) return cand;
+  }
+  return from;
+}
+// 若当前 page 落在被禁用的 provider 上,吸附到最近的启用页(切换显示配置后自愈)。
+static void ensureProvVisible() { if (!provEnabled(page)) page = nextProv(page, 1); }
+
 // 列表页:由屏幕 y 命中会话行号(用渲染时记下的几何,自动/居中两种布局一致);-1 = 空白
 static int rowHitAt(int provIdx, int ty) {
   int n = PROV[provIdx].nsess;
@@ -1461,7 +1551,7 @@ static void handleAction(TouchAction a) {
     case ACT_SWIPE_L: case ACT_SWIPE_R: {            // 横滑:详情翻会话,否则切端
       int dir = (a == ACT_SWIPE_L) ? 1 : -1;
       if (detailProv >= 0) { int n = PROV[detailProv].nsess; if (n) detailIdx = (detailIdx + dir + n) % n; }
-      else page = (page + dir + 2) % 2;
+      else page = nextProv(page, dir);   // 切端:跳过被 companion 禁用的 provider 页
       break;
     }
     case ACT_SWIPE_UP:                               // 上滑:进入下一级(主页 → 列表)
@@ -1490,10 +1580,10 @@ static void btnALong() {
   if (g_listView) { g_listView = false; return; }     // 列表 → 主页
   g_listView = true;                                  // 主页 → 列表
 }
-// 短按 BtnA:详情翻下一会话;否则切 provider
+// 短按 BtnA:详情翻下一会话;否则切 provider(跳过被禁用的 provider 页)
 static void btnAShort() {
   if (detailProv >= 0) { int n = PROV[detailProv].nsess; if (n > 0) detailIdx = (detailIdx + 1) % n; }
-  else page = (page + 1) % 2;
+  else page = nextProv(page, 1);
 }
 
 void loop() {
@@ -1596,7 +1686,7 @@ void loop() {
   float motion = fabsf(mag - g_accMag); g_accMag = mag;
   bool active = M5.BtnA.isPressed() || M5.BtnB.isPressed() || motion > 0.10f;
   if (!g_dim && !g_voice && mag > 1.9f && now - g_lastShake > 900) {     // shake -> next provider (main only)
-    if (detailProv < 0 && !g_listView) page = (page + 1) % 2;   // 详情/列表态下摇晃不切 provider
+    if (detailProv < 0 && !g_listView) page = nextProv(page, 1);   // 详情/列表态下摇晃不切 provider;跳过禁用页
     g_lastShake = now; active = true;
     Serial.printf("[shake] page=%d\n", page);
   }
