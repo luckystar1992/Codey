@@ -102,6 +102,16 @@ def parse_history_n(path):
     return max(1, min(HISTORY_MAX, n))
 
 
+def safe_content_length(headers, limit):
+    """解析 Content-Length:非法/负数/超限 -> None(调用方拒绝);否则返回非负长度。
+    防 rfile.read(-1) 把整条流读进内存(负数 Content-Length 的内存 DoS)。"""
+    try:
+        n = int(headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        return None
+    return None if (n < 0 or n > limit) else n
+
+
 def read_static(path):
     try:
         with open(path, "rb") as f:
@@ -192,20 +202,20 @@ def make_handler(app):
 
         def do_POST(self):
             if self.path.startswith("/codey/config"):
-                length = int(self.headers.get("Content-Length") or 0)
-                if length > MAX_CONFIG_BYTES:
-                    code, resp = config_post(b"", length)
+                length = safe_content_length(self.headers, MAX_CONFIG_BYTES)
+                if length is None:                                # 非法/负数/超限 -> 400
+                    code, resp = config_post(b"", MAX_CONFIG_BYTES + 1)
                 else:
                     body = self.rfile.read(length) if length else b""
                     code, resp = config_post(body, length)
                 self._send(code, json.dumps(resp, ensure_ascii=False).encode())
                 return
             if self.path.startswith("/codey/asr"):
-                length = int(self.headers.get("Content-Length") or 0)
-                if length > MAX_ASR_BYTES:
+                length = safe_content_length(self.headers, MAX_ASR_BYTES)
+                if length is None:                                # 非法/负数/超限 -> 413
                     self._send(413, json.dumps({"text": "", "error": "audio too large"}).encode())
                     return
-                wav = self.rfile.read(length)
+                wav = self.rfile.read(length) if length else b""
                 text, err = "", None
                 try:
                     text = app.whisper.transcribe(wav)

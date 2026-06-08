@@ -73,6 +73,16 @@ class TestServerRoutes(unittest.TestCase):
         self.assertEqual(code, 400)
         self.assertIn("error", resp)
 
+    def test_safe_content_length_rejects_bad_values(self):
+        # 负数/非数字/超限 -> None(do_POST 据此拒绝,防 rfile.read(-1) 内存 DoS)
+        class H(dict):
+            def get(self, k, d=None): return dict.get(self, k, d)
+        self.assertIsNone(server.safe_content_length(H({"Content-Length": "-1"}), 100))
+        self.assertIsNone(server.safe_content_length(H({"Content-Length": "abc"}), 100))
+        self.assertIsNone(server.safe_content_length(H({"Content-Length": "101"}), 100))
+        self.assertEqual(server.safe_content_length(H({"Content-Length": "50"}), 100), 50)
+        self.assertEqual(server.safe_content_length(H({}), 100), 0)
+
     def test_config_post_bad_json_400(self):
         body = b"{not json"
         code, resp = server.config_post(body, len(body))
