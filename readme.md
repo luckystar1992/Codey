@@ -324,6 +324,67 @@ transcript streaming above and a `● LISTENING…` / `RECOGNIZING…` status li
 **Optional local punctuation** — drop a sherpa `*punct*` model directory under
 `companion/models/` to punctuate local-sherpa output; absent → no-op.
 
+## Remote access (ngrok)
+
+By default the watch and the companion must be on the same Wi-Fi. To reach the companion from
+any network — e.g. the Mac sits at the office while the watch is on your home Wi-Fi — expose it
+over **ngrok**. This publishes `/codey/state` (model/usage info) and the ASR WebSocket through
+ngrok with basic-auth.
+
+**Setup**
+
+1. Install and authenticate ngrok:
+
+   ```bash
+   brew install ngrok/ngrok/ngrok
+   ngrok config add-authtoken <token>   # or set NGROK_AUTHTOKEN in .env
+   ```
+
+2. Claim a free **static domain** in the ngrok dashboard (Domains). This gives a stable
+   `your-name.ngrok-free.app` that the watch can hardcode.
+3. Copy the tunnel config and fill the credentials in `.env`:
+
+   ```bash
+   cp companion/ngrok.yml.example companion/ngrok.yml
+   ```
+
+   | Variable | Purpose |
+   |---|---|
+   | `NGROK_AUTHTOKEN` | your ngrok agent authtoken |
+   | `NGROK_DOMAIN` | the static domain (e.g. `your-name.ngrok-free.app`) |
+   | `NGROK_BASIC_AUTH` | basic-auth credential, e.g. `codey:<long-secret>` |
+
+4. Start the service, then the tunnels:
+
+   ```bash
+   cd companion
+   ./deploy.sh start --bg   # companion on :8787 / :8788
+   ./tunnel.sh              # ngrok double tunnel (state + asr)
+   ```
+
+5. On the watch's Wi-Fi setup portal, set **Remote host** = your static domain and
+   **Auth** = `codey:<long-secret>`. The ASR endpoint is delivered automatically via
+   `/codey/state` (`asr_url`), so only the state domain needs configuring.
+
+**How it works** — the state API rides the stable static domain. The ASR tunnel URL is random
+on ngrok's free plan, so the companion discovers it from ngrok's local API (`:4040`) and
+publishes it into `/codey/state.asr_url`; the device only needs the one stable domain. The
+device talks HTTPS/WSS (TLS) and sends the `Authorization` (basic-auth) header.
+
+**Verify** — from any network:
+
+```bash
+curl -u codey:<secret> -H "ngrok-skip-browser-warning: true" https://your-name.ngrok-free.app/codey/state
+```
+
+**Security note** — basic-auth is **required**: anyone with the URL and credentials can read
+your usage/session data and stream audio to the ASR socket. Never commit `ngrok.yml` or `.env`
+(both gitignored). The device skips TLS certificate verification (`setInsecure`), so the
+basic-auth secret is the only thing protecting the endpoint — make it long and random.
+
+> The **Remote host** / **Auth** portal fields are added in the firmware (a later task); the
+> watch step above describes the intended UX.
+
 ## Device Controls
 
 - Left button: switch page.

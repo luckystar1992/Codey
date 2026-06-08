@@ -312,6 +312,64 @@ cp companion/.env.example companion/.env
 **可选本地标点** — 在 `companion/models/` 下放置 sherpa `*punct*` 模型目录，可为本地
 sherpa 转写结果补充标点；不放置则跳过标点步骤。
 
+## 远程访问（ngrok）
+
+默认情况下手表与 Companion 必须在同一 Wi-Fi。若想跨网络访问 Companion——例如 Mac 放在公司、
+手表连家里的 Wi-Fi——可用 **ngrok** 把服务暴露到公网。它会带 basic-auth 把
+`/codey/state`（模型/用量信息）和 ASR WebSocket 一起暴露出去。
+
+**配置**
+
+1. 安装并完成 ngrok 鉴权：
+
+   ```bash
+   brew install ngrok/ngrok/ngrok
+   ngrok config add-authtoken <token>   # 或在 .env 里设 NGROK_AUTHTOKEN
+   ```
+
+2. 在 ngrok 控制台（Domains）申请一个免费 **静态域名**，得到稳定的
+   `your-name.ngrok-free.app`，手表可固定写死它。
+3. 复制隧道配置，并在 `.env` 里填好凭据：
+
+   ```bash
+   cp companion/ngrok.yml.example companion/ngrok.yml
+   ```
+
+   | 变量 | 作用 |
+   |---|---|
+   | `NGROK_AUTHTOKEN` | ngrok agent 的 authtoken |
+   | `NGROK_DOMAIN` | 静态域名（如 `your-name.ngrok-free.app`） |
+   | `NGROK_BASIC_AUTH` | basic-auth 凭据，如 `codey:<long-secret>` |
+
+4. 先起服务，再起隧道：
+
+   ```bash
+   cd companion
+   ./deploy.sh start --bg   # Companion 监听 :8787 / :8788
+   ./tunnel.sh              # ngrok 双隧道（state + asr）
+   ```
+
+5. 在手表的 Wi-Fi 配网页里，把 **Remote host** 设为你的静态域名，**Auth** 设为
+   `codey:<long-secret>`。ASR 地址会通过 `/codey/state` 的 `asr_url` 自动下发，
+   因此只需配置状态域名这一个值。
+
+**工作原理** — 状态 API 跑在稳定的静态域名上；免费档下 ASR 隧道地址是随机的，因此由 Companion
+从 ngrok 本地 API（`:4040`）读取后写入 `/codey/state.asr_url`，设备只需这一个稳定域名。设备走
+HTTPS/WSS（TLS），并携带 `Authorization`（basic-auth）请求头。
+
+**验证** — 任意网络下执行：
+
+```bash
+curl -u codey:<secret> -H "ngrok-skip-browser-warning: true" https://your-name.ngrok-free.app/codey/state
+```
+
+**安全提示** — basic-auth 是**必需**的：任何拿到 URL 和凭据的人都能读取你的用量/会话数据，
+并向 ASR socket 推流音频。切勿提交 `ngrok.yml` 或 `.env`（两者均已 gitignore）。设备会跳过 TLS
+证书校验（`setInsecure`），所以 basic-auth 密钥是保护端点的唯一屏障——请设得足够长且随机。
+
+> 配网页里的 **Remote host** / **Auth** 字段将在固件中加入（属后续任务）；上面的手表步骤描述的是
+> 目标交互方式。
+
 ## 手表操作
 
 - 左键：切换页面。
