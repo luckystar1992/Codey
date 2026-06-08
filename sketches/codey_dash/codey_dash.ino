@@ -79,6 +79,7 @@ static int16_t  g_micBuf[256];       // (legacy, unused)
 static float    g_micLevel = 0.12f;  // smoothed mic level (0..1)
 // ---- streaming voice: 主loop 采集 -> StreamBuffer -> netTask sendBIN -> sherpa partials ----
 static int      g_vphase = 0;        // 0 off, 1 listening/streaming, 2 finalizing, 3 result
+static volatile uint16_t g_voiceSeq = 0;   // 每次会话自增;只认当前 seq 的 stt(丢弃上次迟到结果)
 static char     g_transcript[256] = {0};   // live/final transcript (netTask 写, 主loop 读)
 static const int    REC_RATE = 16000;
 static const size_t MAX_SAMPLES = (size_t)(REC_RATE * 15);     // 15s max listen window
@@ -503,8 +504,14 @@ static void blitProviderArc(int provIdx) {
 // ---- WebSocket streaming-ASR client ----
 static void wsListen(bool start) {            // listen-control messages (xiaozhi-style)
   if (!g_wsConn) return;
-  g_ws.sendTXT(start ? "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"manual\"}"
-                     : "{\"type\":\"listen\",\"state\":\"stop\"}");
+  if (start) {
+    char m[112];
+    snprintf(m, sizeof(m), "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"manual\",\"seq\":%u}",
+             (unsigned)g_voiceSeq);                  // 带本轮会话序号,companion 回显到 stt
+    g_ws.sendTXT(m);
+  } else {
+    g_ws.sendTXT("{\"type\":\"listen\",\"state\":\"stop\"}");
+  }
 }
 
 static void wsEvent(WStype_t type, uint8_t* payload, size_t len) {
@@ -520,6 +527,7 @@ static void wsEvent(WStype_t type, uint8_t* payload, size_t len) {
     JsonDocument doc;
     if (deserializeJson(doc, payload, len)) return;
     if (strcmp(doc["type"] | "", "stt") == 0) {
+      if (doc["seq"].is<int>() && (uint16_t)(doc["seq"] | 0) != g_voiceSeq) return;  // 丢弃陈旧会话的迟到 stt
       strncpy(g_transcript, (const char*)(doc["text"] | ""), sizeof(g_transcript) - 1);
       g_transcript[sizeof(g_transcript) - 1] = '\0';            // live partial / final
       if (doc["final"] | false) g_sttFinal = true;
@@ -1506,7 +1514,7 @@ void loop() {
     if (bothSince == 0) bothSince = now;
     if (!bothFired && now - bothSince > 400) {
       bothFired = true; g_setSel = 0; g_inSettings = !g_inSettings;
-      if (g_inSettings) { g_voice = false; g_vphase = 0; } else bootMs = millis();
+      if (g_inSettings) { g_voice = false; g_vphase = 0; g_voiceSeq++; } else bootMs = millis();  // 进设置=放弃语音,推进 seq 丢弃迟到结果
     }
   } else {
     bothSince = 0; bothFired = false;
@@ -1514,7 +1522,7 @@ void loop() {
       settingsButtons();                                   // BtnA = down, BtnB = confirm
     } else if (M5.BtnB.wasPressed() && !M5.BtnA.isPressed()) {   // right button -> voice command
       if (!g_voice) {                                      // start streaming
-        g_voice = true; g_voiceT0 = now; g_micLevel = 0.12f;
+        g_voice = true; g_voiceT0 = now; g_micLevel = 0.12f; g_voiceSeq++;   // 新会话序号(隔离上次迟到结果)
         g_transcript[0] = 0; g_heardSpeech = false; g_silenceT0 = 0; g_noiseFloor = 0.06f;
         g_sentSamples = 0; g_recEnd = 0; g_finalReqT0 = 0; g_sttFinal = false;
         if (g_micOK && g_audioBuf && g_wsConn) {
@@ -1530,6 +1538,8 @@ void loop() {
         }
       } else if (g_vphase == 1) {
         g_recEnd = capturedSamples(); g_vphase = 2;        // press again -> stop & finalize
+      } else if (g_vphase == 2) {
+        g_voice = false; g_vphase = 0; g_voiceSeq++;       // finalizing 时再按 -> 取消等待(丢弃迟到 final)
       } else if (g_vphase == 3) {
         g_voice = false; g_vphase = 0;                     // dismiss the result
       }
@@ -1570,7 +1580,7 @@ void loop() {
         g_sentSamples += n;
       }
       if (g_finalReqT0 == 0) { g_netListenReq = 2; g_finalReqT0 = now; }  // netTask -> listen:stop (finalize)
-      if (g_sttFinal || now - g_finalReqT0 > 4000) {                    // got the final result (or timeout)
+      if (g_sttFinal || now - g_finalReqT0 > 2500) {                    // got the final result (or 2.5s 超时,可按键提前取消)
         if (g_transcript[0] == 0) { strncpy(g_transcript, "(没听清)", sizeof(g_transcript) - 1); g_transcript[sizeof(g_transcript) - 1] = 0; }
         g_vphase = 3; g_resultT0 = now;
       }
