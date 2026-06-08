@@ -100,7 +100,22 @@
 
   <!-- ============ 教学 ============ -->
   <section id="teach">
-    <div class="card"><h2>教学</h2><p class="muted">上手步骤稍后填充。</p></div>
+    <div class="card"><h2>首次安装 · 五步上手</h2>
+      <p class="muted">按顺序走一遍即可点亮手表并开启语音输入。命令在 Mac 终端执行。</p></div>
+    <div class="step"><div class="n">1</div><div class="b"><b>Mac 起服务</b>
+      <div class="muted">在仓库根目录启动 companion 后台服务(管理台 / 状态 / ASR 一并就绪)。</div>
+      <div><code>cd companion &amp;&amp; ./deploy.sh start --bg</code></div></div>
+    <div class="step"><div class="n">2</div><div class="b"><b>授权辅助功能</b>
+      <div class="muted">系统设置 → 隐私与安全性 → 辅助功能,勾选运行服务的终端 / Python,
+        否则语音转写无法粘贴到聚焦窗口。</div></div>
+    <div class="step"><div class="n">3</div><div class="b"><b>下载 sherpa 模型(本地 ASR)</b>
+      <div class="muted">按 README 的「ASR 模型」一节下载模型,解压放到 <code>companion/models/</code>;
+        想纯云端转写可在「配置」里把引擎切到 doubao。</div></div>
+    <div class="step"><div class="n">4</div><div class="b"><b>手表配网</b>
+      <div class="muted">首次上电手表开 <code>Codey-Setup</code> 热点 → 手机/电脑连上 → 浏览器打开
+        <code>192.168.4.1</code> → 选择与 Mac 同一局域网的 Wi-Fi 并填密码。</div></div>
+    <div class="step"><div class="n">5</div><div class="b"><b>(可选)远程访问 ngrok</b>
+      <div class="muted">想在外网连回家里的 Mac,用 ngrok 发布用量与 ASR 通道;详见 README「远程访问」一节。</div></div>
   </section>
 
   <!-- ============ 配置 ============ -->
