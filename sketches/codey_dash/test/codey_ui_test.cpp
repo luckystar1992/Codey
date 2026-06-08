@@ -71,6 +71,12 @@ int main() {
   // 越界回归:超长数字串不得溢出内部 ver[12](v<VMAX 保护,版本截断到 11 位)
   modelShort("claude-opus-99999999999999999999", b, sizeof(b)); assert(!strcmp(b, "Opus 99999999999"));
 
+  // ---- parseWssHost: 从 wss://host/... / ws://host:port/... 抽 host ----
+  parseWssHost("wss://ab12.ngrok-free.app/x", b, sizeof(b)); assert(!strcmp(b, "ab12.ngrok-free.app"));
+  parseWssHost("wss://h.example.com", b, sizeof(b));         assert(!strcmp(b, "h.example.com"));
+  parseWssHost("ws://1.2.3.4:8788/", b, sizeof(b));          assert(!strcmp(b, "1.2.3.4"));
+  parseWssHost("", b, sizeof(b));                            assert(!strcmp(b, ""));
+
   (void)S;
   printf("codey_ui tests: ALL PASS\n");
   return 0;

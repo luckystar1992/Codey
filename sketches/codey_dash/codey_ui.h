@@ -25,6 +25,22 @@ static inline const char* statusWord(SessStatus s) {
 // sort rank for cross-provider merge: executing < thinking < (waiting|done)
 static inline int statusRank(SessStatus s) { return s == ST_EXECUTING ? 0 : s == ST_THINKING ? 1 : 2; }
 
+// ---- remote ASR url -> host ----
+// Extract the host from a websocket url: "wss://host/..." or "ws://host:port/..." ->
+// strip the scheme, then copy up to the first '/' or ':' (drops path and port).
+// Empty/null input -> empty output. Always NUL-terminates (truncates to n-1 bytes).
+static inline void parseWssHost(const char* url, char* out, size_t n) {
+  if (!out || n == 0) return;
+  out[0] = 0;
+  if (!url || !url[0]) return;
+  const char* p = url;
+  const char* sep = strstr(p, "://");          // skip scheme (ws:// / wss:// / anything://)
+  if (sep) p = sep + 3;
+  size_t i = 0;
+  for (; p[i] && p[i] != '/' && p[i] != ':' && i < n - 1; i++) out[i] = p[i];
+  out[i] = 0;
+}
+
 // ---- UTF-8 codepoint helpers ----
 static inline int utf8Len(unsigned char c) { return c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1; }
 

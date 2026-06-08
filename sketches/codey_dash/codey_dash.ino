@@ -17,8 +17,10 @@
 #include <WebServer.h>      // 自研 WiFi 配置门户(历史列表/一键连/删除/扫描)
 #include <DNSServer.h>      // captive portal:连上热点自动弹配置页
 #include <HTTPClient.h>     // fetch usage JSON from the Companion
+#include <WiFiClientSecure.h>  // HTTPS(ngrok 远程隧道)— TLS 客户端
 #include <ArduinoJson.h>    // parse it
 #include <WebSocketsClient.h>  // stream mic PCM to the sherpa-onnx ASR server, receive live text
+#include <mbedtls/base64.h>    // base64(user:pass) -> HTTP Basic auth
 #include <ESPmDNS.h>        // resolve the Mac by hostname (survives DHCP IP changes)
 #include <Preferences.h>    // persist brightness/volume settings in NVS
 #include <sys/time.h>       // settimeofday() — set the clock from the Companion's epoch
@@ -98,6 +100,11 @@ static const char*    MAC_FALLBACK_IP = "10.100.0.89";
 static String         g_macIp = "10.100.0.89";   // netTask only
 static char           g_manualMac[24] = {0};      // 手填 Companion IP(NVS;门户写/netTask读)
 static const uint16_t ASR_PORT = 8788;
+// ---- remote access (ngrok):rhost 非空 -> HTTPS state + WSS ASR;空 -> 局域网(不变) ----
+static String         g_remoteHost = "";          // ngrok 域名(如 your.ngrok-free.app);空=局域网模式
+static String         g_remoteAuthRaw = "";       // 原始 "user:pass"(门户回填用;空=无认证)
+static String         g_remoteAuthB64 = "";       // base64("user:pass"),空=无 Basic 认证(boot 时算)
+static char           g_asrUrl[160] = {0};         // Companion /codey/state 下发的 wss:// ASR url(netTask 写/读)
 static char     g_model[48] = {0};   // Claude 模型名(头像下),netTask 写 主loop 读
 static char     g_codexModel[48] = {0};  // Codex 最常用模型名(头像下)
 static volatile int  g_netListenReq = 0;     // 1=start 2=stop (主loop -> netTask)
@@ -1059,8 +1066,30 @@ static void syncRtcFromSystem() {
   M5.Rtc.setDateTime(dt);
   Serial.printf("RTC synced (Beijing): %04d-%02d-%02d %02d:%02d\n", dt.date.year, dt.date.month, dt.date.date, dt.time.hours, dt.time.minutes);
 }
+// base64-encode a string (for HTTP Basic auth "user:pass"); empty in -> empty out
+static String b64(const String& in) {
+  if (in.length() == 0) return String("");
+  size_t inLen = in.length();
+  size_t outLen = 0;
+  // sizing pass (dst=NULL, dlen=0 -> required size incl. NUL in *olen)
+  mbedtls_base64_encode(nullptr, 0, &outLen, (const unsigned char*)in.c_str(), inLen);
+  if (outLen == 0) return String("");
+  unsigned char* buf = (unsigned char*)malloc(outLen);
+  if (!buf) return String("");
+  size_t written = 0;
+  int rc = mbedtls_base64_encode(buf, outLen, &written, (const unsigned char*)in.c_str(), inLen);
+  String out = (rc == 0) ? String((const char*)buf) : String("");
+  free(buf);
+  return out;
+}
+
 // find the Companion Mac on the LAN by mDNS hostname (robust to DHCP IP changes); else fixed fallback
 static void resolveMac() {
+  if (g_remoteHost.length()) {                       // 远程模式:走 ngrok HTTPS,不做 mDNS/LAN 解析
+    g_companionUrl = "https://" + g_remoteHost + "/codey/state";
+    Serial.printf("Companion (remote) -> %s\n", g_companionUrl.c_str());
+    return;
+  }
   String ip = "";
   if (MDNS.begin("codey-watch")) {                 // 1) mDNS (家用网/不拦多播的网)
     IPAddress a = MDNS.queryHost(MAC_HOSTNAME, 2000);
@@ -1072,12 +1101,40 @@ static void resolveMac() {
   g_companionUrl = "http://" + g_macIp + ":8787/codey/state";
   Serial.printf("Companion Mac -> %s\n", g_macIp.c_str());
 }
-// (re)point the streaming-ASR WebSocket at the current Mac IP (after IP change / WiFi switch)
+// (re)point the streaming-ASR WebSocket at the current target (LAN IP or remote WSS host).
+// netTask-only. Remote mode (g_remoteHost set) uses TLS via beginSSL once a wss:// url has been
+// delivered in /codey/state (g_asrUrl); otherwise plain WS to the Mac on the LAN.
+// g_wsExtraHdr backs setExtraHeaders — the WS lib keeps the pointer, so it must outlive the connection.
+static String g_wsExtraHdr = "";          // netTask-only: backing store for setExtraHeaders
 static void wsConnect() {
   g_ws.disconnect();
-  g_ws.begin(g_macIp.c_str(), ASR_PORT, "/");
+  if (g_remoteHost.length() && g_asrUrl[0]) {        // 远程:WSS(TLS)到下发的 ASR 域名
+    char host[160]; parseWssHost(g_asrUrl, host, sizeof(host));
+    if (host[0]) {
+      g_wsExtraHdr = "";                             // ngrok 警告页跳过 + 可选 Basic 认证
+      if (g_remoteAuthB64.length()) g_wsExtraHdr += "Authorization: Basic " + g_remoteAuthB64 + "\r\n";
+      g_wsExtraHdr += "ngrok-skip-browser-warning: true";
+      g_ws.setExtraHeaders(g_wsExtraHdr.c_str());
+      g_ws.beginSSL(host, 443, "/");                 // 空 fingerprint -> ESP32 内部 setInsecure()
+    }
+  } else {                                            // 局域网:明文 WS 到 Mac(行为不变,保留库默认 Origin 头)
+    g_ws.begin(g_macIp.c_str(), ASR_PORT, "/");
+  }
   g_ws.onEvent(wsEvent);
   g_ws.setReconnectInterval(3000);
+}
+
+// 远程模式下,/codey/state 下发的 ASR 域名可能变化(ngrok 重启换地址)。netTask-only。
+// 记录 WS 当前指向的 host,仅当目标 host 真正变化时才断开重连(避免抖动 thrash)。
+static String g_wsAsrHost = "";          // netTask-only:WS 当前指向的 host
+static void maybeRepointWs() {
+  if (g_remoteHost.length() == 0 || g_asrUrl[0] == 0) return;   // 局域网/尚未下发 -> 不动
+  char host[160]; parseWssHost(g_asrUrl, host, sizeof(host));
+  if (!host[0]) return;
+  if (g_wsAsrHost == host) return;       // host 未变 -> 不重连(防抖)
+  g_wsAsrHost = host;
+  Serial.printf("ASR url changed -> WSS %s\n", host);
+  wsConnect();                            // 内部已 disconnect() + beginSSL(host,...)
 }
 
 static void netTask(void*);   // 定义在后面(core0 网络任务);setup 里 xTaskCreate 需先声明
@@ -1093,6 +1150,11 @@ void setup() {
   g_bright = g_prefs.getUChar("bright", 255);
   g_volume = g_prefs.getUChar("vol", 50);
   { String m = g_prefs.getString("macip", ""); strncpy(g_manualMac, m.c_str(), sizeof(g_manualMac) - 1); g_manualMac[sizeof(g_manualMac) - 1] = 0; }
+  // ---- remote access (ngrok):rhost 非空 -> HTTPS state + WSS ASR;空 -> 局域网(默认,行为不变) ----
+  g_remoteHost    = g_prefs.getString("rhost", "");
+  g_remoteAuthRaw = g_prefs.getString("rauth", "");
+  g_remoteAuthB64 = g_remoteAuthRaw.length() ? b64(g_remoteAuthRaw) : String("");
+  if (g_remoteHost.length()) Serial.printf("remote mode: host=%s auth=%s\n", g_remoteHost.c_str(), g_remoteAuthB64.length() ? "yes" : "no");
   M5.Display.setBrightness(g_bright);
 
   randomSeed(micros());
@@ -1166,7 +1228,14 @@ static void fetchState() {
   HTTPClient http;
   http.setConnectTimeout(2500);
   http.setTimeout(3500);
-  if (!http.begin(g_companionUrl)) return;
+  if (g_remoteHost.length()) {                       // 远程:HTTPS(TLS,不校验证书)+ ngrok/Basic 头
+    static WiFiClientSecure tls; tls.setInsecure();
+    if (!http.begin(tls, g_companionUrl)) return;
+    if (g_remoteAuthB64.length()) http.addHeader("Authorization", "Basic " + g_remoteAuthB64);
+    http.addHeader("ngrok-skip-browser-warning", "true");
+  } else {                                            // 局域网:明文 HTTP(行为不变)
+    if (!http.begin(g_companionUrl)) return;
+  }
   bool ok = false;
   int code = http.GET();
   if (code == 200) {
@@ -1174,6 +1243,8 @@ static void fetchState() {
     DeserializationError err = deserializeJson(doc, http.getString());
     if (!err) {
       g_stale = doc["stale"] | false;
+      const char* a = doc["asr_url"] | "";           // 远程下发的 wss:// ASR url(局域网为空)
+      strncpy(g_asrUrl, a, sizeof(g_asrUrl) - 1); g_asrUrl[sizeof(g_asrUrl) - 1] = 0;
       for (JsonObject pr : doc["providers"].as<JsonArray>()) {
         const char* id = pr["id"] | "";
         int i = (strcmp(id, "claude") == 0) ? 0 : (strcmp(id, "codex") == 0 ? 1 : -1);
@@ -1233,7 +1304,7 @@ static void netTask(void*) {
       uint8_t buf[1024]; size_t n;                  // 转发主loop采集的语音 PCM
       while (g_wsConn && (n = xStreamBufferReceive(g_voiceSB, buf, sizeof(buf), 0)) > 0) g_ws.sendBIN(buf, n);
       uint32_t now = millis();                      // 定时拉 usage(语音时让路)
-      if (!g_voice && (lastFetch == 0 || now - lastFetch > 30000)) { lastFetch = now; fetchState(); }
+      if (!g_voice && (lastFetch == 0 || now - lastFetch > 30000)) { lastFetch = now; fetchState(); maybeRepointWs(); }
     } else { started = false; }
     vTaskDelay(5 / portTICK_PERIOD_MS);
   }
