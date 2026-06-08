@@ -970,6 +970,8 @@ static String portalHtml() {
        "<input id=ssid name=ssid placeholder=SSID>"
        "<input name=pass type=password placeholder='密码（连接历史网络可留空）'>"
        "<input name=macip placeholder='Companion Mac IP（留空=自动 mDNS）' value=\"" + String(g_manualMac) + "\">"
+       "<input name=rhost placeholder='Remote host（ngrok域名，留空=局域网）' value=\"" + g_remoteHost + "\">"
+       "<input name=rauth placeholder='Auth（user:pass，留空=无）' value=\"" + g_remoteAuthRaw + "\">"
        "<button class=pri type=submit>保存并连接</button></form>";
   h += F("<script>function doScan(){let s=document.getElementById('scan');s.innerHTML='<option>扫描中…</option>';"
          "fetch('/scan').then(r=>r.json()).then(d=>{s.innerHTML='';d.sort((a,b)=>b.r-a.r);"
@@ -1000,6 +1002,11 @@ static void portalHandleConnect() {
   WebServer& s = *g_portalSrv;
   String ssid = s.arg("ssid"), pass = s.arg("pass"), mac = s.arg("macip");
   if (mac.length()) { strncpy(g_manualMac, mac.c_str(), sizeof(g_manualMac) - 1); g_manualMac[sizeof(g_manualMac) - 1] = 0; g_prefs.putString("macip", g_manualMac); }
+  // 远程访问(ngrok):rhost 空=局域网模式。两字段总是落盘(留空即清除)。重启后由 setup 生效。
+  String rhost = s.arg("rhost"); rhost.trim();
+  String rauth = s.arg("rauth");
+  g_prefs.putString("rhost", rhost);
+  g_prefs.putString("rauth", rauth);
   if (ssid.length() == 0) { s.send(200, "text/html; charset=utf-8", "<meta charset=utf-8>请填写 SSID。<a href=/>返回</a>"); return; }
   if (pass.length() == 0) { const char* hp = wifiStorePass(ssid.c_str()); if (hp) pass = hp; }   // 一键连:用历史密码
   WiFi.begin(ssid.c_str(), pass.c_str());
