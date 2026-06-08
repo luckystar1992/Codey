@@ -520,37 +520,18 @@ static void wsEvent(WStype_t type, uint8_t* payload, size_t len) {
   }
 }
 
-// ---------- voice overlay (LISTENING animation, triggered by the right button) ----------
-// A multi-colour particle orb that pulses with the mic level (real if available, else simulated).
-static void drawVoiceParticles(int cx, int cy, float amp, float t) {
-  static const int N = 80;
-  static const uint32_t PAL[6] = { 0xF4894F, 0x22D3A6, 0x35B8FF, 0xFF6BB0, 0xFFD24A, 0xB48CFF };
-  static float pa[N], prad[N], pspd[N], pz[N], ptw[N];
-  static uint8_t pcix[N];
-  static bool init = false;
-  if (!init) {
-    for (int i = 0; i < N; i++) {
-      pa[i]   = (random(1000) / 1000.0f) * TWO_PI;
-      prad[i] = 0.30f + (random(1000) / 1000.0f) * 0.70f;        // fraction of orb radius
-      pspd[i] = (0.2f + (random(1000) / 1000.0f) * 0.8f) * (random(2) ? 1 : -1);
-      pz[i]   = random(1000) / 1000.0f;
-      ptw[i]  = (random(1000) / 1000.0f) * TWO_PI;
-      pcix[i] = random(6);                                       // pick a palette colour
-    }
-    init = true;
-  }
-  const float R = 98.0f * (0.85f + amp * 0.5f);                  // orb expands with level
-  for (int i = 0; i < N; i++) {
-    pa[i]  += 0.012f * pspd[i] * (0.6f + amp);                   // spin faster when louder
-    ptw[i] += 0.12f;
-    float wob = sinf(t * 2 + ptw[i]) * (1.0f + amp * 2.0f) * 4.0f;
-    float rad = prad[i] * R + wob;
-    float x = cx + cosf(pa[i]) * rad;
-    float y = cy + sinf(pa[i]) * rad * 0.92f;
-    float depth = 0.4f + 0.6f * ((sinf(pa[i]) + 1.0f) * 0.5f);
-    int r = (int)((0.9f + pz[i] * 2.2f) * depth) + 1;
-    float br = (0.35f + 0.65f * depth) * (0.7f + 0.3f * sinf(ptw[i]));
-    cv.fillCircle((int)x, (int)y, r, c565(shade(PAL[pcix[i]], -(1.0f - br) * 0.55f)));
+// ---------- voice overlay (meme-style: active mascot + streaming transcript) ----------
+// Sonar rings that breathe outward with the mic level — the "listening" energy cue that
+// replaces the old particle orb. The provider mascot is drawn on top by drawVoiceOverlay().
+static void drawListenRings(int cx, int cy, int baseR, uint32_t color, float amp, float t) {
+  const int RINGS = 3;
+  for (int i = 0; i < RINGS; i++) {
+    float phase = t * 0.9f - i * 0.45f;                          // staggered outward pulses
+    float k = phase - floorf(phase);                             // 0..1 expansion within a pulse
+    float r = baseR * (1.0f + k * (0.45f + amp * 0.9f));         // louder -> rings reach further
+    float fade = (1.0f - k) * (0.30f + amp * 0.55f);             // fade as they expand; brighter when loud
+    if (fade <= 0.02f) continue;
+    cv.drawCircle(cx, cy, (int)r, c565(shade(color, -0.55f + fade * 0.85f)));
   }
 }
 
@@ -581,27 +562,41 @@ static void drawVoiceOverlay() {
   const uint32_t color = PROV[page].color;
   const float t = (millis() - g_voiceT0) / 1000.0f;
   const bool hasText = g_transcript[0] != 0;
+  const bool result  = (g_vphase == 3);
+  const float amp = (g_vphase == 1) ? constrain(g_micLevel, 0.06f, 1.0f) : 0.16f;
 
-  // particle orb: pulses with the real mic level while listening, calm otherwise
-  float amp = (g_vphase == 1) ? constrain(g_micLevel, 0.06f, 1.0f) : 0.16f;
-  drawVoiceParticles(CX, hasText ? 120 : CY - 8, amp, t);
-
-  // live (partial) -> final transcript, streamed in as you speak
+  // 1) streaming transcript at the TOP — partial -> final, like meme's inline label
   if (hasText) {
     cv.setFont(&fonts::efontCN_24); cv.setTextSize(1);
-    cv.setTextColor(c565(0xFFFFFF));
-    drawWrappedCJK(String(g_transcript), CX, 305, 420, 34);
+    cv.setTextColor(c565(result ? 0xFFFFFF : 0xFFD27A));      // warm while live, white once settled
+    drawWrappedCJK(String(g_transcript), CX, 100, 412, 34);
+    cv.drawFastHLine(CX - 130, 176, 260, c565(shade(color, -0.3f)));   // divider under transcript
   }
 
-  cv.setTextDatum(middle_center);
-  if (g_vphase == 1 || g_vphase == 2) {                       // LISTENING / RECOGNIZING label
+  // 2) the provider mascot in its "active" state: breathes with the mic level + listening rings
+  const int my = hasText ? 300 : CY + 6;                      // shift down when transcript present
+  const float scale = (hasText ? 0.92f : 1.12f) * (1.0f + amp * 0.16f);
+  if (g_vphase == 1 || g_vphase == 2)
+    drawListenRings(CX, my, (int)(70 * scale), color, amp, t);
+  const char* mood = result ? "happy" : "";                   // calm-attentive while listening
+  if (page == 0) drawClaude(CX, my, color, mood, t, scale);
+  else           drawCodex(CX, my, color, mood, t, scale);
+
+  // 3) status line at the BOTTOM: ● LISTENING… / RECOGNIZING… / dismiss hint
+  if (!result) {
     const char* label = (g_vphase == 1) ? "LISTENING" : "RECOGNIZING";
+    const uint32_t dotc = (g_vphase == 1) ? 0x3CCB7F : 0xFFC24A;   // green listening, amber finalizing
     int dots = ((int)(t * 2)) % 4;
-    char title[20]; snprintf(title, sizeof(title), "%s%.*s", label, dots, "...");
+    char title[24]; snprintf(title, sizeof(title), "%s%.*s", label, dots, "...");
+    char full[24];  snprintf(full,  sizeof(full),  "%s...", label);   // fixed width -> no jiggle
     cv.setFont(&fonts::FreeSansBold18pt7b); cv.setTextSize(1);
-    cv.setTextColor(c565(shade(color, 0.2f)));
-    cv.drawString(title, CX, 410);
-  } else {                                                    // RESULT
+    int gw = 12 + 8 + cv.textWidth(full), sx = CX - gw / 2;           // center the ● + label group
+    cv.fillSmoothCircle(sx + 6, 412, 6, c565(dotc));                  // status dot
+    cv.setTextDatum(middle_left);
+    cv.setTextColor(c565(shade(color, 0.25f)));
+    cv.drawString(title, sx + 20, 412);
+  } else {
+    cv.setTextDatum(middle_center);
     cv.setFont(&fonts::FreeSans9pt7b); cv.setTextColor(c565(0x6a6d74));
     cv.drawString("press right to dismiss", CX, 420);
   }
