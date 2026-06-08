@@ -1,6 +1,6 @@
 # companion/codey/asr_doubao.py
-"""豆包 seed-asr 流式(sauc 2.0)客户端 + 文件回落。
-二进制协议参考 meme/doubao_streaming.py(源自 xiaozhi-esp32-server)。"""
+"""豆包大模型流式语音识别(sauc bigmodel)客户端 + 录音文件回落。
+火山文档:6561/1354869(大模型流式)。二进制协议参考 meme/doubao_streaming.py(源自 xiaozhi-esp32-server)。"""
 import asyncio
 import base64
 import gzip
@@ -69,8 +69,10 @@ class UtteranceMerger:
         return self.text
 
 
-WS_URL      = os.environ.get("DOUBAO_STREAMING_URL", "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async")
-RESOURCE_ID = os.environ.get("DOUBAO_STREAMING_RESOURCE_ID", "volc.seedasr.sauc.duration")
+# 大模型流式(火山文档 6561/1354869):双向流式 endpoint 配 bigasr resource(按时长 duration / 并发 concurrent)。
+# 若用的是 seed-asr V2 服务,改 env:DOUBAO_STREAMING_RESOURCE_ID=volc.seedasr.sauc.duration。
+WS_URL      = os.environ.get("DOUBAO_STREAMING_URL", "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel")
+RESOURCE_ID = os.environ.get("DOUBAO_STREAMING_RESOURCE_ID", "volc.bigasr.sauc.duration")
 
 
 def _cfg():
@@ -207,7 +209,7 @@ class StreamingASRSession:
 
 SUBMIT_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit"
 QUERY_URL  = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query"
-FILE_RESOURCE_ID = os.environ.get("DOUBAO_RESOURCE_ID", "volc.seedasr.auc")
+FILE_RESOURCE_ID = os.environ.get("DOUBAO_RESOURCE_ID", "volc.bigasr.auc")   # 大模型录音文件(auc/bigmodel)
 
 
 def pcm_to_wav_bytes(pcm, rate=16000, bits=16, channels=1):
