@@ -7,12 +7,56 @@
   *{box-sizing:border-box} html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
     font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
   .top{padding:12px 18px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center}
-  .top b{font-size:15px} .top .dot{width:8px;height:8px;border-radius:50%;background:var(--green)}
-  .top .meta{color:var(--dim);font-size:12px}
-  .wrap{display:flex;gap:18px;padding:18px;flex-wrap:wrap}
-  .mirror{flex:0 0 auto} .mirror iframe{width:480px;height:520px;border:0;border-radius:14px;background:#000}
-  .hist{flex:1 1 360px;min-width:320px;background:var(--panel);border:1px solid var(--line);border-radius:14px;
-    padding:14px;max-height:560px;overflow:auto}
+  .top b{font-size:15px} .top .dot{width:8px;height:8px;border-radius:50%;background:var(--green);flex:0 0 auto}
+  .top .meta{color:var(--dim);font-size:12px;margin-left:auto}
+  /* tab nav */
+  .nav{display:flex;gap:4px;padding:10px 14px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .nav button{background:transparent;color:var(--dim);border:0;border-bottom:2px solid transparent;
+    font:inherit;font-size:13px;padding:8px 14px;cursor:pointer;border-radius:6px 6px 0 0}
+  .nav button:hover{color:var(--ink);background:#1a1d22}
+  .nav button.on{color:var(--green);border-bottom-color:var(--green)}
+  section{display:none;padding:18px} section.on{display:block}
+  /* generic cards */
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+  .card h2{margin:0 0 8px;font-size:14px} .card h3{margin:0 0 6px;font-size:13px;color:var(--green)}
+  .muted{color:var(--dim);font-size:12px;line-height:1.6}
+  code{background:#0a0b0e;border:1px solid var(--line);border-radius:6px;padding:2px 6px;font-size:12px;
+    color:#b8e0c8;white-space:pre-wrap;word-break:break-word}
+  a{color:var(--green)} a:hover{text-decoration:underline}
+  /* welcome */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:14px 0}
+  .feat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .feat .ic{font-size:22px} .feat b{display:block;margin:6px 0 4px;font-size:14px}
+  .star{display:inline-flex;align-items:center;gap:8px;background:var(--green);color:#06210f;
+    font:inherit;font-size:14px;font-weight:700;text-decoration:none;padding:10px 18px;border-radius:10px}
+  .star:hover{filter:brightness(1.08);text-decoration:none}
+  /* teaching steps */
+  .step{display:flex;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:14px;margin-bottom:10px}
+  .step .n{flex:0 0 28px;height:28px;border-radius:50%;background:var(--green);color:#06210f;
+    font-weight:700;display:flex;align-items:center;justify-content:center}
+  .step .b b{font-size:14px} .step .b div{margin-top:6px}
+  /* config form */
+  .field{margin:0 0 14px} .field label{display:block;font-size:13px;margin-bottom:5px}
+  .field .hint{color:var(--dim);font-size:11px;margin-top:4px}
+  select,input[type=number],input[type=password]{background:#0a0b0e;color:var(--ink);border:1px solid var(--line);
+    border-radius:8px;padding:8px 10px;font:inherit;font-size:13px;min-width:240px;max-width:100%}
+  select:focus,input:focus{outline:0;border-color:var(--green)}
+  .chk{display:flex;align-items:center;gap:8px;font-size:13px;margin:4px 0}
+  .chk input{width:16px;height:16px;accent-color:var(--green)}
+  .chkgroup{display:flex;flex-wrap:wrap;gap:6px 22px;margin-top:6px}
+  .btn{background:var(--green);color:#06210f;border:0;border-radius:9px;font:inherit;font-size:14px;
+    font-weight:700;padding:10px 22px;cursor:pointer}
+  .btn:hover{filter:brightness(1.08)} .btn:disabled{opacity:.5;cursor:default}
+  .note{font-size:11px;color:var(--dim);background:#14241a;border:1px solid #1f3a28;border-radius:8px;
+    padding:8px 10px;margin:10px 0}
+  .toast{margin-top:12px;font-size:13px;padding:10px 12px;border-radius:8px;display:none}
+  .toast.ok{display:block;background:#11271a;border:1px solid #1f5d38;color:var(--green)}
+  .toast.err{display:block;background:#2a1414;border:1px solid #5d1f1f;color:#ff8a8a}
+  /* mirror + history (existing) */
+  .mirror iframe{width:480px;height:520px;max-width:100%;border:0;border-radius:14px;background:#000}
+  .hist{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;
+    max-height:640px;overflow:auto}
   .hist h2{margin:0 0 10px;font-size:13px;color:var(--dim);letter-spacing:1px}
   .row{padding:8px 6px;border-bottom:1px solid var(--line)}
   .row .t{font-size:11px;color:var(--dim)} .row .x{font-size:14px;margin-top:3px;white-space:pre-wrap;word-break:break-word}
@@ -21,23 +65,215 @@
 </style></head><body>
   <div class="top"><span class="dot" id="dot"></span><b>Codey Companion 管理台</b>
     <span class="meta" id="meta"></span></div>
-  <div class="wrap">
-    <div class="mirror"><iframe src="/sim?live=1" title="device"></iframe></div>
-    <div class="hist"><h2>ASR 识别历史</h2><div id="list"><div class="empty">加载中…</div></div></div>
-  </div>
+  <nav class="nav" id="nav">
+    <button data-tab="welcome" class="on">欢迎</button>
+    <button data-tab="teach">教学</button>
+    <button data-tab="config">配置</button>
+    <button data-tab="mirror">设备镜像</button>
+    <button data-tab="history">识别历史</button>
+  </nav>
+
+  <!-- ============ 欢迎 ============ -->
+  <section id="welcome" class="on">
+    <div class="card"><h2>欢迎</h2><p class="muted">概览内容稍后填充。</p></div>
+  </section>
+
+  <!-- ============ 教学 ============ -->
+  <section id="teach">
+    <div class="card"><h2>教学</h2><p class="muted">上手步骤稍后填充。</p></div>
+  </section>
+
+  <!-- ============ 配置 ============ -->
+  <section id="config">
+    <div class="card"><h2>运行期配置</h2>
+      <p class="muted">改动即时落盘到 <code>companion/data/config.json</code>。显示项 / 刷新间隔立即生效;
+        引擎 / 粘贴改动在下一次语音会话生效。</p></div>
+    <div id="cfgbody"><div class="card"><p class="muted" id="cfgstatus">加载配置中…</p></div></div>
+  </section>
+
+  <!-- ============ 设备镜像 ============ -->
+  <section id="mirror">
+    <div class="card"><h2>设备镜像</h2><p class="muted">实时镜像手表圆屏(与设备同源渲染)。</p></div>
+    <div class="mirror" id="mirrorbox"></div>
+  </section>
+
+  <!-- ============ 识别历史 ============ -->
+  <section id="history">
+    <div class="hist"><h2>ASR 识别历史</h2><div id="list"><div class="empty">切换到本页后自动加载…</div></div></div>
+  </section>
+
 <script>
-function esc(s){return (s||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));}
-async function poll(){
+"use strict";
+// HTML 文本转义(< > & ")
+function esc(s){return String(s==null?'':s).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));}
+
+/* ---------- 顶部状态点 ---------- */
+function setDot(ok,msg){
+  document.getElementById('dot').style.background = ok ? '#3ccb7f' : '#ff5d5d';
+  if(msg!=null) document.getElementById('meta').textContent = msg;
+}
+
+/* ---------- Tab 切换 ---------- */
+let curTab='welcome', histTimer=null, mirrorLoaded=false, cfgLoaded=false;
+function showTab(tab){
+  curTab=tab;
+  document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on', b.dataset.tab===tab));
+  document.querySelectorAll('section').forEach(s=>s.classList.toggle('on', s.id===tab));
+  // 历史轮询:仅在该页激活时运行
+  if(tab==='history'){ startHistory(); } else { stopHistory(); }
+  // 设备镜像:首次进入才插入 iframe(避免每次切换重载)
+  if(tab==='mirror' && !mirrorLoaded){
+    document.getElementById('mirrorbox').innerHTML =
+      '<iframe src="/sim?live=1" title="device"></iframe>';
+    mirrorLoaded=true;
+  }
+  // 配置:首次进入才拉取
+  if(tab==='config' && !cfgLoaded){ loadConfig(); }
+}
+document.getElementById('nav').addEventListener('click', e=>{
+  const b=e.target.closest('button[data-tab]'); if(b) showTab(b.dataset.tab);
+});
+
+/* ---------- 识别历史(仅本页激活时轮询) ---------- */
+async function pollHistory(){
   try{
     const r=await fetch('/codey/history?n=100'); const j=await r.json();
     const list=document.getElementById('list'); const es=(j.entries||[]).slice().reverse();
-    document.getElementById('dot').style.background='#3ccb7f';
-    document.getElementById('meta').textContent=es.length+' 条 · 自动刷新';
+    setDot(true, es.length+' 条 · 自动刷新');
     list.innerHTML = es.length ? es.map(e=>`<div class="row">
       <div class="t">${esc((e.time||'').replace('T',' '))}<span class="e">${esc(e.engine||'')}${e.pasted?' · pasted':''}</span></div>
       <div class="x">${esc(e.text||'')}</div></div>`).join('') : '<div class="empty">暂无识别记录</div>';
-  }catch(err){ document.getElementById('dot').style.background='#ff5d5d';
-    document.getElementById('meta').textContent='连接失败:'+err.message; }
+  }catch(err){ setDot(false, '连接失败:'+esc(err.message)); }
 }
-poll(); setInterval(poll, 2000);
+function startHistory(){ if(histTimer) return; pollHistory(); histTimer=setInterval(pollHistory,2000); }
+function stopHistory(){ if(histTimer){ clearInterval(histTimer); histTimer=null; } }
+
+/* ---------- 配置渲染 ---------- */
+let CFG_SCHEMA=null;
+function chk(name, checked, label){
+  return `<label class="chk"><input type="checkbox" name="${esc(name)}"${checked?' checked':''}><span>${esc(label)}</span></label>`;
+}
+// display 子组:用 schema.fields 的中文 label,values 决定勾选态
+function dispGroup(groupKey, schemaGroup, valGroup){
+  const fields = (schemaGroup && schemaGroup.fields) || {};
+  const items = Object.keys(fields).map(k=>
+    chk(`display.${groupKey}.${k}`, !!(valGroup && valGroup[k]), fields[k].label || k)
+  ).join('');
+  return `<div class="field"><label>${esc((schemaGroup&&schemaGroup.label)||groupKey)}</label>
+    <div class="chkgroup">${items}</div></div>`;
+}
+function renderConfig(values, schema){
+  CFG_SCHEMA=schema;
+  const v=values||{}, s=schema||{};
+  const eng=v.asr_engine||'auto';
+  const opts=((s.asr_engine&&s.asr_engine.options)||['auto','sherpa','doubao'])
+    .map(o=>`<option value="${esc(o)}"${o===eng?' selected':''}>${esc(o)}</option>`).join('');
+  const apiSet=!!v.has_doubao_api_key, idSet=!!(v.doubao_app_id);
+  const rmin=(s.refresh_ms&&s.refresh_ms.min)||500, rmax=(s.refresh_ms&&s.refresh_ms.max)||60000;
+  const html=`
+  <div class="card">
+    <h3>识别与粘贴</h3>
+    <div class="note">引擎 / 粘贴改动在下一次语音会话生效。</div>
+    <div class="field"><label>${esc((s.asr_engine&&s.asr_engine.label)||'识别引擎')}</label>
+      <select name="asr_engine">${opts}</select>
+      <div class="hint">auto = 有 sherpa 模型用本地,否则回退豆包</div></div>
+    ${chk('paste', v.paste!==false, (s.paste&&s.paste.label)||'转写后粘贴到聚焦窗口')}
+    ${chk('paste_auto_enter', !!v.paste_auto_enter, (s.paste_auto_enter&&s.paste_auto_enter.label)||'粘贴后自动回车')}
+  </div>
+
+  <div class="card">
+    <h3>豆包(云端 ASR,可选)</h3>
+    <div class="field"><label>${esc((s.doubao_api_key&&s.doubao_api_key.label)||'豆包 API Key')}</label>
+      <input type="password" name="doubao_api_key" autocomplete="off"
+        placeholder="${apiSet?'已设置(留空保持不变)':'未设置'}">
+      <div class="hint">留空 = 保持现有密钥不变</div></div>
+    <div class="field"><label>${esc((s.doubao_app_id&&s.doubao_app_id.label)||'豆包 App ID')}</label>
+      <input type="password" name="doubao_app_id" autocomplete="off"
+        placeholder="${idSet?'已设置(留空保持不变)':'未设置'}">
+      <div class="hint">留空 = 保持现有值不变</div></div>
+  </div>
+
+  <div class="card">
+    <h3>刷新间隔</h3>
+    <div class="field"><label>${esc((s.refresh_ms&&s.refresh_ms.label)||'用量刷新间隔(ms)')}
+        <span class="hint" style="margin-left:6px">立即生效</span></label>
+      <input type="number" name="refresh_ms" min="${rmin}" max="${rmax}" step="100"
+        value="${esc(v.refresh_ms==null?2000:v.refresh_ms)}">
+      <div class="hint">范围 ${rmin}–${rmax} ms,越界自动夹紧</div></div>
+  </div>
+
+  <div class="card">
+    <h3>设备显示项</h3>
+    <div class="hint" style="margin-bottom:8px">列 = 列表展示的字段;端 = 启用哪些 AI provider。立即生效。</div>
+    ${dispGroup('columns', s.display&&s.display.columns, (v.display&&v.display.columns)||{})}
+    ${dispGroup('providers', s.display&&s.display.providers, (v.display&&v.display.providers)||{})}
+  </div>
+
+  <div class="card">
+    <button class="btn" id="saveBtn" type="button">保存</button>
+    <div class="toast" id="cfgtoast"></div>
+  </div>`;
+  document.getElementById('cfgbody').innerHTML=html;
+  document.getElementById('saveBtn').addEventListener('click', saveConfig);
+}
+function configError(msg){
+  document.getElementById('cfgbody').innerHTML=
+    `<div class="card"><p class="muted">配置加载失败:${esc(msg)}<br>请确认 companion 服务在运行,稍后重试。</p>
+     <button class="btn" type="button" onclick="loadConfig()">重试</button></div>`;
+}
+async function loadConfig(){
+  cfgLoaded=true;
+  try{
+    const r=await fetch('/codey/config');
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const j=await r.json();
+    renderConfig(j.values, j.schema);
+  }catch(err){ cfgLoaded=false; configError(err.message); }
+}
+
+/* ---------- 收集表单 → POST ---------- */
+function collectForm(){
+  const root=document.getElementById('cfgbody');
+  const out={
+    asr_engine: root.querySelector('[name=asr_engine]').value,
+    paste: root.querySelector('[name=paste]').checked,
+    paste_auto_enter: root.querySelector('[name=paste_auto_enter]').checked,
+    // 密钥:留空 → "" → 后端视为「保持不变」
+    doubao_api_key: root.querySelector('[name=doubao_api_key]').value,
+    doubao_app_id: root.querySelector('[name=doubao_app_id]').value,
+    refresh_ms: Number(root.querySelector('[name=refresh_ms]').value)||2000,
+    display:{columns:{}, providers:{}},
+  };
+  root.querySelectorAll('[name^="display."]').forEach(el=>{
+    const p=el.name.split('.');           // display.columns.memory
+    if(p.length===3) out.display[p[1]][p[2]]=el.checked;
+  });
+  // doubao_app_id 留空亦不应清空已存值:空串则不发该键
+  if(out.doubao_app_id==='') delete out.doubao_app_id;
+  return out;
+}
+function toast(kind,msg){
+  const t=document.getElementById('cfgtoast'); if(!t) return;
+  t.className='toast '+kind; t.textContent=msg;
+}
+async function saveConfig(){
+  const btn=document.getElementById('saveBtn'); btn.disabled=true;
+  toast('ok','保存中…');
+  try{
+    const r=await fetch('/codey/config',{method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify(collectForm())});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok || !j.ok){ throw new Error((j&&j.error)||('HTTP '+r.status)); }
+    renderConfig(j.values, CFG_SCHEMA);   // 用回包值重渲染(密钥已遮罩)
+    toast('ok','已保存 ✓ 显示项/刷新立即生效,引擎/粘贴下次语音会话生效。');
+  }catch(err){
+    btn.disabled=false;
+    toast('err','保存失败:'+esc(err.message));
+  }
+}
+
+/* ---------- 启动 ---------- */
+// 轻量探活:让顶部状态点反映服务可达性,不依赖任何 tab
+fetch('/codey/config').then(r=>setDot(r.ok,'已连接')).catch(()=>setDot(false,'未连接'));
+showTab('welcome');
 </script></body></html>
