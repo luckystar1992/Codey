@@ -1,0 +1,16 @@
+# companion/ngrok.yml.example — 复制为 ngrok.yml 填值;启动:ngrok start --all --config ngrok.yml
+version: "3"
+agent:
+  authtoken: ${NGROK_AUTHTOKEN}
+tunnels:
+  codey-state:
+    proto: http
+    addr: 8787
+    domain: ${NGROK_DOMAIN}
+    basic_auth:
+      - ${NGROK_BASIC_AUTH}
+  codey-asr:
+    proto: http
+    addr: 8788
+    basic_auth:
+      - ${NGROK_BASIC_AUTH}

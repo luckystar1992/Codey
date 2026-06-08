@@ -72,5 +72,8 @@ companion/models/**/*.int8.onnx
 # Runtime ASR history and companion generated data
 companion/data/
 
+# Filled ngrok config (secrets/domain) — keep ngrok.yml.example committed instead
+companion/ngrok.yml
+
 # Superpowers brainstorming (visual companion) scratch dir
 .superpowers/
