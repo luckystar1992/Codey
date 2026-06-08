@@ -74,7 +74,8 @@ RESOURCE_ID = os.environ.get("DOUBAO_STREAMING_RESOURCE_ID", "volc.seedasr.sauc.
 
 
 def _cfg():
-    return {"app_id": os.environ.get("DOUBAO_APP_ID", ""), "api_key": os.environ.get("DOUBAO_API_KEY", "")}
+    from codey import config            # 分层:配置台(config.json) > .env(os.environ) > 默认
+    return {"app_id": config.get("doubao_app_id"), "api_key": config.get("doubao_api_key")}
 
 
 class StreamingASRSession:

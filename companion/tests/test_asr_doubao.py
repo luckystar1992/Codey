@@ -35,3 +35,14 @@ def test_merge_utterances_dedups_finals():
     st.feed([{"text": "ing", "definite": False}])
     assert st.final_text == "你好世界"
     assert st.text == "你好世界ing"
+
+
+def test_cfg_reads_from_config_then_env(tmp_path, monkeypatch):
+    # 配置台(config.json)优先;无 config.json 时回退 .env(os.environ)
+    from codey import config as cfg
+    monkeypatch.setattr(cfg, "CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.setenv("DOUBAO_API_KEY", "env-key")
+    monkeypatch.setenv("DOUBAO_APP_ID", "env-app")
+    assert d._cfg() == {"app_id": "env-app", "api_key": "env-key"}     # 回退 env
+    cfg.save({"doubao_api_key": "cfg-key", "doubao_app_id": "cfg-app"})
+    assert d._cfg() == {"app_id": "cfg-app", "api_key": "cfg-key"}     # 配置台覆盖 env
