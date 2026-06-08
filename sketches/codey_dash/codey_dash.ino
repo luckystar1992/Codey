@@ -847,20 +847,16 @@ static void renderDetailPage() {
   uint16_t sw = c565(st == ST_EXECUTING ? shade(color, 0.25f) : st == ST_THINKING ? 0xffd479 : 0x8b9097);
   cv.setTextColor(sw); cv.drawString(statusWord(st), CX, 180);
 
-  // 数据宫格:CTX / TURN / TOKENS / MEMORY,各自由对应列开关控制,启用块均分居中(块越少越居中)。
-  // 注:原详情页只有 CTX/TURN/TOKENS 三块;memory 列默认开 → 全开时新增 MEM 块(共 4 块,
-  //     span=414px,在 466 圆屏可视范围内,左右各余 ~26px)。这是相对旧固件唯一的“默认外观”变化,
-  //     符合需求「memory off → 不显示 memory 块」的语义(memory 作为可隐藏的详情块存在)。
+  // 数据宫格:保持原「三宫格」CTX / TURN / TOKENS,各自由对应列开关控制(关掉则隐去该块,启用块均分居中)。
+  // memory 列只作用于列表表格,不在详情页加块 —— 保留刻意的三宫格默认外观不变。
   char ctxv[8]; snprintf(ctxv, sizeof(ctxv), "%d%%", s.ctxPct);
   char turnv[8]; snprintf(turnv, sizeof(turnv), "%d", s.turn);
   char tokv[12]; fmtTokens(s.tokTotal, tokv, sizeof(tokv));   // K千/W万/B十亿
-  char memv[10]; fmtMem(s.memKb, memv, sizeof(memv));
   struct Tile { const char* label; const char* value; };
-  Tile tiles[4]; int nt = 0;
+  Tile tiles[3]; int nt = 0;
   if (g_disp.col[DC_CTX])    tiles[nt++] = { "CTX",    ctxv };
   if (g_disp.col[DC_TURN])   tiles[nt++] = { "TURN",   turnv };
   if (g_disp.col[DC_TOKENS]) tiles[nt++] = { "TOKENS", tokv };
-  if (g_disp.col[DC_MEMORY]) tiles[nt++] = { "MEM",    memv };
   if (nt > 0) {
     const int tw = 96, th = 50, gap = 10, ty = 228;
     int span = nt * tw + (nt - 1) * gap;
