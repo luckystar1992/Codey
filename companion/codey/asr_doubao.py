@@ -8,6 +8,7 @@ import json
 import os
 import struct
 import time
+import urllib.error
 import urllib.request
 import uuid
 
@@ -156,6 +157,8 @@ class StreamingASRSession:
             except Exception:
                 pass
         if self._connect_error or not self.ws:
+            if self._connect_error:                  # 真实流式失败原因(如 app_id 空 -> 400),别被文件回落盖住
+                print(f"[asr] doubao stream connect failed: {self._connect_error!r}", flush=True)
             await self.close(); return ""
         async with self._lock:
             for pcm in (self._pending or []):
@@ -224,8 +227,11 @@ def pcm_to_wav_bytes(pcm, rate=16000, bits=16, channels=1):
 def _post_json(url, headers, body):
     req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
                                  headers={**headers, "Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return dict(r.headers), r.read()
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return dict(r.headers), r.read()
+    except urllib.error.HTTPError as e:           # 403/4xx 仍返回头/体,让上层读 X-Api-Status-Code/Message(不抛 raw 错)
+        return dict(e.headers), e.read()
 
 
 async def transcribe_wav_bytes(wav_bytes, timeout_s=15.0):
@@ -242,10 +248,10 @@ async def transcribe_wav_bytes(wav_bytes, timeout_s=15.0):
 
     def _submit():
         h, _ = _post_json(SUBMIT_URL, headers, body)
-        return h.get("X-Api-Status-Code", "")
-    status = await asyncio.to_thread(_submit)
+        return h.get("X-Api-Status-Code", ""), h.get("X-Api-Message", "")
+    status, msg = await asyncio.to_thread(_submit)
     if status != "20000000":
-        return {"error": f"submit failed: {status}"}
+        return {"error": f"submit failed: {status} {msg}".strip()}
 
     deadline = time.time() + timeout_s
     delay = 0.1
@@ -284,6 +290,8 @@ class DoubaoBackend:
         if not text and len(self._pcm) > 16000:          # 流式空 + 有 >0.5s 音频 → 文件回落
             res = await transcribe_wav_bytes(pcm_to_wav_bytes(bytes(self._pcm)))
             text = (res.get("text") or "").strip()
+            if res.get("error"):                         # 回落也失败:打印原因(如资源未开通)
+                print(f"[asr] doubao file fallback failed: {res['error']}", flush=True)
         return [{"text": text, "final": True}]
 
     async def close(self):
