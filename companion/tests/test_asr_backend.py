@@ -124,3 +124,17 @@ def test_accept_error_does_not_kill_connection():
                                      enter=lambda: paster.__setitem__("enter", paster["enter"] + 1),
                                      clear=lambda: None, enabled=True, auto_enter=False)))
     assert paster["enter"] == 1     # 连接存活,后续 submit 仍被处理
+
+
+def test_paste_reads_config_live_when_enabled_none(tmp_path, monkeypatch):
+    # 默认 paster(enabled=None)-> 在用时实时读 config:不必重连/重启即可开关粘贴
+    from codey import config as cfg
+    monkeypatch.setattr(cfg, "CONFIG_PATH", str(tmp_path / "config.json"))
+    calls = {"paste": 0}
+    def once():
+        p = asr.Paster(paste=lambda t: calls.__setitem__("paste", calls["paste"] + 1),
+                       enter=lambda: None, clear=lambda: None, enabled=None, auto_enter=None)
+        ws = FakeWS([json.dumps({"type": "listen", "state": "stop"})])
+        run(asr.handle(ws, make_backend=lambda: FakeBackend(), paster=p))
+    cfg.save({"paste": False}); once(); assert calls["paste"] == 0     # 关 -> 不粘贴
+    cfg.save({"paste": True});  once(); assert calls["paste"] == 1     # 开 -> 粘贴(实时生效)

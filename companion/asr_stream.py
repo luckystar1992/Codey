@@ -89,9 +89,10 @@ Paster = namedtuple("Paster", "paste enter clear enabled auto_enter")
 
 
 def default_paster():
-    from codey import paste as _p, envcfg as _c
+    from codey import paste as _p
+    # enabled/auto_enter=None -> handle() 在用时实时读 config(改粘贴配置不必重连 WS / 重启服务或设备)
     return Paster(paste=_p.paste_to_active_window, enter=_p.press_enter, clear=_p.clear_input,
-                  enabled=_c.paste_enabled(), auto_enter=_c.auto_enter())
+                  enabled=None, auto_enter=None)
 
 
 class SherpaBackend:
@@ -151,6 +152,9 @@ def make_backend():
 async def handle(ws, make_backend=make_backend, paster=None):
     if paster is None:
         paster = default_paster()
+    from codey import envcfg as _ec
+    def paste_on():  return _ec.paste_enabled() if paster.enabled is None else paster.enabled
+    def enter_on():  return _ec.auto_enter() if paster.auto_enter is None else paster.auto_enter
     backend = None
     last_sent = None
     cur_seq = 0          # 回显 listen:start 带来的会话序号,设备据此丢弃陈旧会话的迟到结果
@@ -218,22 +222,23 @@ async def handle(ws, make_backend=make_backend, paster=None):
                         print(f"[asr] stop error: {e}", flush=True); final_text = None
                     await close_backend(backend)
                     backend = None
-                    if final_text and paster.enabled:
+                    pasted = final_text and paste_on()
+                    if pasted:
                         try:                             # 粘贴失败(如未授辅助功能)不应断开连接
                             paster.paste(final_text)
-                            if paster.auto_enter:
+                            if enter_on():
                                 paster.enter()
                         except Exception as e:
                             print(f"[asr] paste error: {e}", flush=True)
                     if final_text:
-                        from codey import asr_history, envcfg as _ec
-                        asr_history.append(final_text, engine=_ec.select_engine(), pasted=paster.enabled)
+                        from codey import asr_history
+                        asr_history.append(final_text, engine=_ec.select_engine(), pasted=bool(pasted))
                 elif t == "submit":
-                    if paster.enabled:
+                    if paste_on():
                         try: paster.enter()
                         except Exception: pass
                 elif t == "clear":
-                    if paster.enabled:
+                    if paste_on():
                         try: paster.clear()
                         except Exception: pass
     except websockets.ConnectionClosed:
