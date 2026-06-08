@@ -76,6 +76,9 @@ int main() {
   parseWssHost("wss://h.example.com", b, sizeof(b));         assert(!strcmp(b, "h.example.com"));
   parseWssHost("ws://1.2.3.4:8788/", b, sizeof(b));          assert(!strcmp(b, "1.2.3.4"));
   parseWssHost("", b, sizeof(b));                            assert(!strcmp(b, ""));
+  char tiny[5];
+  parseWssHost("wss://abcdefgh/x", tiny, sizeof(tiny));
+  assert(!strcmp(tiny, "abcd"));   // truncated to n-1, NUL-terminated
 
   (void)S;
   printf("codey_ui tests: ALL PASS\n");

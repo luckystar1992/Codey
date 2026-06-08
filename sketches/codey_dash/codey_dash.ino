@@ -946,6 +946,18 @@ static String urlencode(const String& s) {
   return o;
 }
 
+// HTML-escape a user-controlled string for safe interpolation into a value="..." attribute.
+static String htmlAttr(const String& s) {
+  String o; o.reserve(s.length());
+  for (size_t i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (c == '&') o += "&amp;"; else if (c == '<') o += "&lt;";
+    else if (c == '>') o += "&gt;"; else if (c == '"') o += "&quot;";
+    else o += c;
+  }
+  return o;
+}
+
 static String portalHtml() {
   String h = F("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
     "<title>Codey WiFi</title><style>"
@@ -961,7 +973,7 @@ static String portalHtml() {
   if (g_netCount == 0) h += F("<div class=ct>暂无历史网络</div>");
   for (int i = 0; i < g_netCount; i++) {
     h += "<div class=row><div><span class=ss>" + String(g_nets[i].ssid) + "</span><span class=ct>×" + String(g_nets[i].count) + "</span></div><div>";
-    h += "<form style='display:inline' method=POST action=/connect><input type=hidden name=ssid value=\"" + String(g_nets[i].ssid) + "\"><button class=lk>连接</button></form> ";
+    h += "<form style='display:inline' method=POST action=/connect><input type=hidden name=ssid value=\"" + htmlAttr(String(g_nets[i].ssid)) + "\"><button class=lk>连接</button></form> ";
     h += "<a href='/del?ssid=" + urlencode(g_nets[i].ssid) + "'><button class=del>删除</button></a></div></div>";
   }
   h += F("<h3>周边网络</h3><select id=scan onchange=\"document.getElementById('ssid').value=this.value\"><option>点「扫描」刷新…</option></select>"
@@ -969,9 +981,9 @@ static String portalHtml() {
   h += "<h3>连接 / 新增网络</h3><form method=POST action=/connect>"
        "<input id=ssid name=ssid placeholder=SSID>"
        "<input name=pass type=password placeholder='密码（连接历史网络可留空）'>"
-       "<input name=macip placeholder='Companion Mac IP（留空=自动 mDNS）' value=\"" + String(g_manualMac) + "\">"
-       "<input name=rhost placeholder='Remote host（ngrok域名，留空=局域网）' value=\"" + g_remoteHost + "\">"
-       "<input name=rauth placeholder='Auth（user:pass，留空=无）' value=\"" + g_remoteAuthRaw + "\">"
+       "<input name=macip placeholder='Companion Mac IP（留空=自动 mDNS）' value=\"" + htmlAttr(String(g_manualMac)) + "\">"
+       "<input name=rhost placeholder='Remote host（ngrok域名，留空=局域网）' value=\"" + htmlAttr(g_remoteHost) + "\">"
+       "<input name=rauth type=password placeholder='Auth（user:pass，留空=无）' value=\"" + htmlAttr(g_remoteAuthRaw) + "\">"
        "<button class=pri type=submit>保存并连接</button></form>";
   h += F("<script>function doScan(){let s=document.getElementById('scan');s.innerHTML='<option>扫描中…</option>';"
          "fetch('/scan').then(r=>r.json()).then(d=>{s.innerHTML='';d.sort((a,b)=>b.r-a.r);"
@@ -1115,15 +1127,18 @@ static void resolveMac() {
 static String g_wsExtraHdr = "";          // netTask-only: backing store for setExtraHeaders
 static void wsConnect() {
   g_ws.disconnect();
-  if (g_remoteHost.length() && g_asrUrl[0]) {        // 远程:WSS(TLS)到下发的 ASR 域名
-    char host[160]; parseWssHost(g_asrUrl, host, sizeof(host));
-    if (host[0]) {
-      g_wsExtraHdr = "";                             // ngrok 警告页跳过 + 可选 Basic 认证
-      if (g_remoteAuthB64.length()) g_wsExtraHdr += "Authorization: Basic " + g_remoteAuthB64 + "\r\n";
-      g_wsExtraHdr += "ngrok-skip-browser-warning: true";
-      g_ws.setExtraHeaders(g_wsExtraHdr.c_str());
-      g_ws.beginSSL(host, 443, "/");                 // 空 fingerprint -> ESP32 内部 setInsecure()
+  if (g_remoteHost.length()) {                       // 远程模式:绝不空连 LAN(asr_url 未到则等 maybeRepointWs 触发)
+    if (g_asrUrl[0]) {                               // 远程:WSS(TLS)到下发的 ASR 域名
+      char host[160]; parseWssHost(g_asrUrl, host, sizeof(host));
+      if (host[0]) {
+        g_wsExtraHdr = "";                           // ngrok 警告页跳过 + 可选 Basic 认证
+        if (g_remoteAuthB64.length()) g_wsExtraHdr += "Authorization: Basic " + g_remoteAuthB64 + "\r\n";
+        g_wsExtraHdr += "ngrok-skip-browser-warning: true";
+        g_ws.setExtraHeaders(g_wsExtraHdr.c_str());
+        g_ws.beginSSL(host, 443, "/");               // 空 fingerprint -> ESP32 内部 setInsecure()
+      }
     }
+    // g_asrUrl 尚未下发 -> 这一轮什么都不连;asr_url 首次到达时由 maybeRepointWs() 发起首连
   } else {                                            // 局域网:明文 WS 到 Mac(行为不变,保留库默认 Origin 头)
     g_ws.begin(g_macIp.c_str(), ASR_PORT, "/");
   }
