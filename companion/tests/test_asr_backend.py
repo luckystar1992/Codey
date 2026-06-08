@@ -92,6 +92,26 @@ def test_old_backend_closed_when_new_listen_start():
     assert closed == ["a", "b"]
 
 
+def test_stt_echoes_listen_start_seq():
+    # listen:start 带 seq -> 之后每条 stt(partial + final)都回显该 seq;设备据此丢弃陈旧会话
+    ws = FakeWS([
+        json.dumps({"type": "listen", "state": "start", "seq": 7}),
+        b"\x00\x01" * 8,
+        json.dumps({"type": "listen", "state": "stop"}),
+    ])
+    run(asr.handle(ws, make_backend=lambda: FakeBackend(), paster=_noop_paster()))
+    stts = [json.loads(m) for m in ws.sent if isinstance(m, str) and json.loads(m).get("type") == "stt"]
+    assert stts and all(s["seq"] == 7 for s in stts)
+
+
+def test_stt_seq_defaults_zero_without_listen_start():
+    # 没有 listen:start(或不带 seq)时 seq 缺省 0,向后兼容
+    ws = FakeWS([b"\x00\x01" * 8])
+    run(asr.handle(ws, make_backend=lambda: FakeBackend(), paster=_noop_paster()))
+    stts = [json.loads(m) for m in ws.sent if isinstance(m, str) and json.loads(m).get("type") == "stt"]
+    assert stts and all(s["seq"] == 0 for s in stts)
+
+
 def test_accept_error_does_not_kill_connection():
     # a backend whose accept raises must not abort the loop; submit afterwards still works
     paster = {"enter": 0}

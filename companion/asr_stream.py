@@ -153,12 +153,14 @@ async def handle(ws, make_backend=make_backend, paster=None):
         paster = default_paster()
     backend = None
     last_sent = None
+    cur_seq = 0          # 回显 listen:start 带来的会话序号,设备据此丢弃陈旧会话的迟到结果
 
     async def send(text, final):
         nonlocal last_sent
         text = (text or "").strip()
         if final or text != last_sent:
-            await ws.send(json.dumps({"type": "stt", "text": text, "final": final}, ensure_ascii=False))
+            await ws.send(json.dumps({"type": "stt", "text": text, "final": final, "seq": cur_seq},
+                                     ensure_ascii=False))
             last_sent = text
 
     async def emit(events):
@@ -203,6 +205,10 @@ async def handle(ws, make_backend=make_backend, paster=None):
                     await close_backend(backend)         # 关掉上一个(防 doubao ws/reader 泄漏)
                     backend = make_backend(); await backend.start()
                     last_sent = None
+                    try:                                 # 本轮会话序号,后续 stt 回显;公网客户端可能发非法值
+                        cur_seq = int(data.get("seq") or 0)
+                    except (TypeError, ValueError):
+                        cur_seq = 0
                 elif t == "listen" and data.get("state") == "stop":
                     if backend is None:
                         backend = make_backend(); await backend.start()
