@@ -19,7 +19,75 @@ NGROK_REFRESH_MS = 15000          # ngrok 公网地址轮询(免费档 ASR 地�
 STATE_PORT = int(os.environ.get("CODEY_PORT") or 8787)
 ASR_PORT = int(os.environ.get("CODEY_ASR_PORT") or 8788)
 MAX_ASR_BYTES = 8_000_000
+MAX_CONFIG_BYTES = 64 * 1024      # /codey/config POST 体积上限(64KB)
 HISTORY_MAX = 500
+
+# UI 读取的配置 schema(纯数据;每项 type/options/label/min/max/restart)。
+SCHEMA = {
+    "asr_engine": {"type": "select", "options": ["auto", "sherpa", "doubao"],
+                   "label": "识别引擎", "restart": False},
+    "paste": {"type": "bool", "label": "转写后粘贴到聚焦窗口", "restart": False},
+    "paste_auto_enter": {"type": "bool", "label": "粘贴后自动回车", "restart": False},
+    "doubao_api_key": {"type": "password", "label": "豆包 API Key", "restart": False},
+    "doubao_app_id": {"type": "password", "label": "豆包 App ID", "restart": False},
+    "refresh_ms": {"type": "int", "min": 500, "max": 60000,
+                   "label": "用量刷新间隔(ms)", "restart": False},
+    "display": {
+        "type": "group",
+        "label": "设备显示项",
+        "columns": {"type": "group", "label": "列表列", "fields": {
+            "status": {"type": "bool", "label": "状态"},
+            "model": {"type": "bool", "label": "模型"},
+            "ctx": {"type": "bool", "label": "上下文"},
+            "tokens": {"type": "bool", "label": "Tokens"},
+            "memory": {"type": "bool", "label": "内存"},
+            "turn": {"type": "bool", "label": "轮次"},
+        }},
+        "providers": {"type": "group", "label": "启用端", "fields": {
+            "claude": {"type": "bool", "label": "Claude Code"},
+            "codex": {"type": "bool", "label": "Codex"},
+        }},
+        "restart": False,
+    },
+}
+
+
+def mask_config(values):
+    """遮罩密钥:SECRET_KEYS 的值替为 ""、并加 has_<key>:bool(原值)。非密钥原样保留。
+    不就地改入参——返回新 dict。"""
+    out = dict(values)
+    for k in config.SECRET_KEYS:
+        real = out.get(k, "")
+        out[k] = ""
+        out["has_" + k] = bool(real)
+    return out
+
+
+def config_get_payload():
+    """GET /codey/config 的响应体:{values: 遮罩全量, schema}。"""
+    return {"values": mask_config(config.all()), "schema": SCHEMA}
+
+
+def config_post(body, content_length):
+    """POST /codey/config 处理:返回 (status_code, response_dict)。
+    - content_length 超 MAX_CONFIG_BYTES → 400
+    - 坏 JSON / 非 dict → 400
+    - 密钥被 POST 成 "" 视为「不改」(遮罩往返不会清空已存密钥)
+    - 校验/落盘交给 config.save(永不抛错),回 {ok, values: 遮罩全量}
+    """
+    if content_length is not None and content_length > MAX_CONFIG_BYTES:
+        return 400, {"ok": False, "error": "config body too large"}
+    try:
+        parsed = json.loads(body.decode("utf-8") or "{}")
+    except (ValueError, UnicodeDecodeError):
+        return 400, {"ok": False, "error": "invalid JSON"}
+    if not isinstance(parsed, dict):
+        return 400, {"ok": False, "error": "config body must be an object"}
+    # 空密钥=保留现值:在落盘前剔除值为 "" 的密钥键
+    clean = {k: v for k, v in parsed.items()
+             if not (k in config.SECRET_KEYS and v == "")}
+    config.save(clean)
+    return 200, {"ok": True, "values": mask_config(config.all())}
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")   # companion/web
 SIM_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                         "sim", "codey-sim.html")   # repo/sim/codey-sim.html
@@ -112,6 +180,8 @@ def make_handler(app):
             elif path == "/sim":
                 body, ctype = read_static(SIM_PATH)
                 self._send(200, body, ctype) if body is not None else self._send(404, b"sim missing", "text/plain")
+            elif path.startswith("/codey/config"):
+                self._send(200, json.dumps(config_get_payload(), ensure_ascii=False).encode())
             elif path.startswith("/codey/state"):
                 self._send(200, json.dumps(app.state()).encode())
             elif path.startswith("/codey/history"):
@@ -121,6 +191,15 @@ def make_handler(app):
                 self._send(404, b"not found", "text/plain")
 
         def do_POST(self):
+            if self.path.startswith("/codey/config"):
+                length = int(self.headers.get("Content-Length") or 0)
+                if length > MAX_CONFIG_BYTES:
+                    code, resp = config_post(b"", length)
+                else:
+                    body = self.rfile.read(length) if length else b""
+                    code, resp = config_post(body, length)
+                self._send(code, json.dumps(resp, ensure_ascii=False).encode())
+                return
             if self.path.startswith("/codey/asr"):
                 length = int(self.headers.get("Content-Length") or 0)
                 if length > MAX_ASR_BYTES:
