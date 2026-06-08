@@ -371,6 +371,9 @@ on ngrok's free plan, so the companion discovers it from ngrok's local API (`:40
 publishes it into `/codey/state.asr_url`; the device only needs the one stable domain. The
 device talks HTTPS/WSS (TLS) and sends the `Authorization` (basic-auth) header.
 
+> If you override `CODEY_PORT` / `CODEY_ASR_PORT`, update the matching `addr:` in `ngrok.yml`
+> too — the companion matches tunnels by local port, so a mismatch leaves `asr_url` empty.
+
 **Verify** — from any network:
 
 ```bash

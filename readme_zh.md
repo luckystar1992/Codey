@@ -357,6 +357,9 @@ sherpa 转写结果补充标点；不放置则跳过标点步骤。
 从 ngrok 本地 API（`:4040`）读取后写入 `/codey/state.asr_url`，设备只需这一个稳定域名。设备走
 HTTPS/WSS（TLS），并携带 `Authorization`（basic-auth）请求头。
 
+> 若覆盖了 `CODEY_PORT` / `CODEY_ASR_PORT`，需同步修改 `ngrok.yml` 里对应的 `addr:`——Companion
+> 按本地端口匹配隧道,端口对不上会让 `asr_url` 为空。
+
 **验证** — 任意网络下执行：
 
 ```bash
