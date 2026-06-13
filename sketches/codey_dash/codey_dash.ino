@@ -28,6 +28,11 @@
 #include "wifi_store.h"     // 多 WiFi 记忆:历史网络(SSID/密码/连接次数)的 NVS 数据层
 #include "codey_ui.h"
 #include "session_store.h"
+#include "fonts/jbmono_16.h"
+#include "fonts/jbmono_20.h"
+#include "fonts/jbmono_28.h"
+#include "fonts/grotesk_20.h"
+#include "fonts/grotesk_28.h"
 
 // 触摸手势抽象动作(声明置顶:Arduino 生成的函数原型被提到 include 之后,需先见到此类型)
 enum TouchAction { ACT_NONE, ACT_TAP, ACT_DOUBLE_TAP, ACT_SWIPE_L, ACT_SWIPE_R, ACT_SWIPE_UP, ACT_SWIPE_DOWN };
@@ -663,6 +668,32 @@ static void render() {
   cv.pushSprite(0, 0);
 }
 
+// 跨端等待提醒:首个 waiting 会话画橙色胶囊;limited 则红色 RATE LIMITED。
+// 命中区写入 g_banner*(供点击直达详情)。无 waiting 且未 limited 返回 false。
+static int g_bannerTop = 0, g_bannerH = 0, g_bannerProv = -1, g_bannerIdx = -1;
+static bool drawWaitBanner(int provIdx) {
+  const Prov& p = PROV[provIdx];
+  int widx = -1;
+  for (int i = 0; i < p.nsess; i++) if ((SessStatus)p.sess[i].status == ST_WAITING) { widx = i; break; }
+  g_bannerProv = -1; g_bannerIdx = -1;
+  if (widx < 0 && !p.limited) return false;
+  const int by = 70, bh = 26; g_bannerTop = by - bh / 2; g_bannerH = bh;
+  char buf[64];
+  uint32_t col = p.limited ? 0xff5d5d : 0xffa94d;
+  if (p.limited) snprintf(buf, sizeof(buf), "RATE LIMITED");
+  else {
+    g_bannerProv = provIdx; g_bannerIdx = widx;
+    char nm[24]; truncCp(p.sess[widx].name, 10, nm, sizeof(nm));
+    snprintf(buf, sizeof(buf), "%s 等你输入", nm);
+  }
+  cv.fillRoundRect(CX - 110, g_bannerTop, 220, bh, 13, c565(shade(col, -0.78f)));
+  cv.drawRoundRect(CX - 110, g_bannerTop, 220, bh, 13, c565(col));
+  cv.fillSmoothCircle(CX - 92, by, 4, c565(col));
+  cv.setFont(&fonts::efontCN_16); cv.setTextDatum(middle_center); cv.setTextColor(c565(col));
+  cv.drawString(buf, CX + 6, by);
+  return true;
+}
+
 static void renderUsagePage(int provIdx) {
   const Prov& p = PROV[provIdx];
   blitProviderArc(provIdx);
@@ -672,6 +703,7 @@ static void renderUsagePage(int provIdx) {
   const char* mood = moodForUsage(max(p.sessUsed, p.weekUsed), p.activeCount, g_batt);
   if (provIdx == 0) drawClaude(CX, 150, p.color, mood, t, 1.0f);
   else              drawCodex(CX, 150, p.color, mood, t, 1.0f);
+  drawWaitBanner(provIdx);
   const char* mdl = (provIdx == 0) ? g_model : g_codexModel;
   if (mdl[0]) {
     cv.setFont(&fonts::FreeSans9pt7b); cv.setTextSize(1);
@@ -684,6 +716,10 @@ static void renderUsagePage(int provIdx) {
   drawMeter(250, "usage",  p.sessUsed, sR, p.color);
   drawMeter(286, "weekly", p.weekUsed, wR, p.color);
   drawSessionCount(344, p.activeCount, p.nsess);    // session 运行/总数(运行数绿)
+  { char rate[24]; fmtTokens(p.tokPerMin, rate, sizeof(rate));
+    char line[32]; snprintf(line, sizeof(line), "%s/min", rate);
+    cv.loadFont(JBMono16); cv.setTextDatum(middle_center); cv.setTextColor(c565(0x8a8d94));
+    cv.drawString(line, CX, 368); cv.unloadFont(); }
   drawWifiStatus(406);
   drawDots(provIdx, p.color);
 }
