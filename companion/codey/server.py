@@ -42,6 +42,8 @@ SCHEMA = {
             "tokens": {"type": "bool", "label": "Tokens"},
             "memory": {"type": "bool", "label": "内存"},
             "turn": {"type": "bool", "label": "轮次"},
+            "summary": {"type": "bool", "label": "摘要"},
+            "branch": {"type": "bool", "label": "分支"},
         }},
         "providers": {"type": "group", "label": "启用端", "fields": {
             "claude": {"type": "bool", "label": "Claude Code"},

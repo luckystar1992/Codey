@@ -22,7 +22,8 @@ DEFAULTS = {
     "refresh_ms": 2000,              # usage 后台刷新间隔(ms),clamp [500, 60000]
     "display": {
         "columns": {"status": True, "model": True, "ctx": True,
-                    "tokens": True, "memory": True, "turn": True},
+                    "tokens": True, "memory": True, "turn": True,
+                    "summary": True, "branch": True},
         "providers": {"claude": True, "codex": True},
     },
 }
