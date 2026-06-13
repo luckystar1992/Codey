@@ -56,7 +56,7 @@ class TestState(unittest.TestCase):
             st = state_mod.build_state(cache, tok)
         self.assertEqual(st["display"], {})
 
-    def test_sort_active_first(self):
+    def test_sort_waiting_first_integration(self):
         cache = {"claude": [
             {"id": "a", "status": "waiting", "context_pct": 5, "tokens_total": 0, "git": {"added": 0, "modified": 0}, "model": ""},
             {"id": "b", "status": "executing", "context_pct": 10, "tokens_total": 0, "git": {"added": 0, "modified": 0}, "model": ""},
@@ -66,7 +66,28 @@ class TestState(unittest.TestCase):
         with mock.patch.object(state_mod, "read_real_usage", return_value=None), \
              mock.patch.object(state_mod, "read_codex_usage", return_value=None):
             st = state_mod.build_state(cache, tok)
-        self.assertEqual([s["id"] for s in st["providers"][0]["sessions"]], ["b", "c", "a"])
+        self.assertEqual([s["id"] for s in st["providers"][0]["sessions"]], ["a", "b", "c"])
+
+
+    def test_provider_limited_flag(self):
+        cache = {"claude": [], "codex": []}
+        tok = {"claude": {"prev": None, "val": 0}, "codex": {"prev": None, "val": 0}}
+        five = {"used_percentage": 100, "resets_at": 0}
+        with mock.patch.object(state_mod, "read_real_usage",
+                               return_value={"five_hour": five, "seven_day": None, "fresh": True}), \
+             mock.patch.object(state_mod, "read_codex_usage", return_value=None):
+            st = state_mod.build_state(cache, tok)
+        self.assertTrue(st["providers"][0]["limited"])
+
+    def test_sort_waiting_first(self):
+        from codey.state import _sort_sessions
+        arr = [
+            {"id": "e", "status": "executing", "context_pct": 10},
+            {"id": "w", "status": "waiting", "context_pct": 5},
+            {"id": "t", "status": "thinking", "context_pct": 90},
+        ]
+        order = [s["id"] for s in _sort_sessions(arr)]
+        self.assertEqual(order, ["w", "e", "t"])
 
 
 if __name__ == "__main__":
