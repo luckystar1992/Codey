@@ -47,8 +47,8 @@ static const uint32_t COL_WHITE  = 0xFFFFFF;
 
 // ---------- provider data ----------
 static Prov PROV[2] = {
-  { "Claude", COL_CLAUDE, 0, 0, 0, 0, 0, 0, 0, {}, 0 },
-  { "Codex",  COL_CODEX,  0, 0, 0, 0, 0, 0, 0, {}, 0 },
+  { "Claude", COL_CLAUDE, 0, 0, 0, 0, 0, 0, 0, false, {}, 0 },
+  { "Codex",  COL_CODEX,  0, 0, 0, 0, 0, 0, 0, false, {}, 0 },
 };
 static int g_batt = 76;             // refreshed from the real battery each second
 static int g_clkH = 0, g_clkM = 0;  // refreshed from the on-board RTC each second
@@ -639,7 +639,7 @@ static int detailProv = -1, detailIdx = 0;
 static bool g_listView = false;   // true: 当前 provider 的会话列表(从主页滑入)
 
 // 列表页布局(466 屏内)
-static const int ROW_H = 40, LIST_MAX_VIS = 6;   // 表格行高;同屏最多行(超出则上下循环滚动)
+static const int ROW_H = 64, LIST_MAX_VIS = 4;   // 三行卡片行高;同屏最多行(超出则上下循环滚动)
 // 列表渲染几何(渲染时写,rowHitAt 命中检测读 —— 两者一致)
 static int  g_listBandTop = 0, g_listBandH = 0, g_listOff = 0, g_listVisN = 0;
 static bool g_listAuto = false;
@@ -743,37 +743,15 @@ static void renderListPage(int provIdx) {
     return;
   }
 
-  // 动态列布局:companion 下发的列开关 → 启用列的有序索引 + 槽起点 x(纯函数,host 已测)。
-  // 全开 → 复现原固定列 46/112/204/242/300/358;少列 → 重新铺满并以屏中线居中。
-  int colIdx[DISP_NCOL], colX[DISP_NCOL];
-  int ncol = layoutColumns(g_disp.col, colIdx, colX);
-  if (ncol == 0) { ncol = 1; colIdx[0] = DC_STATUS; colX[0] = DISP_BAND_CENTER - DISP_COL_W[DC_STATUS] / 2; }  // 全关兜底:至少保留状态
-  // STATUS 列的状态点固定画在该列槽起点;状态词右移 DISP_STATUS_WORD_DX。
-  int statusSlotX = -1;
-  for (int k = 0; k < ncol; k++) if (colIdx[k] == DC_STATUS) statusSlotX = colX[k];
-
-  // 居中几何:整张表(表头 + 可见行)以屏幕中线 CY 为对称轴居中
-  const int HEAD_H = 26;
+  // 居中几何:三行卡片列表以屏幕中线 CY 为对称轴居中
   int visN = p.nsess < LIST_MAX_VIS ? p.nsess : LIST_MAX_VIS;
   int bandH = visN * ROW_H;
-  int blockTop = CY - (HEAD_H + bandH) / 2;
-  int headY = blockTop + 11;
-  int bandTop = blockTop + HEAD_H;
+  int bandTop = CY - bandH / 2;
   bool autoScroll = p.nsess > LIST_MAX_VIS;
   int contentH = p.nsess * ROW_H;
   int off = autoScroll ? (int)((millis() / 40) % (uint32_t)contentH) : 0;   // ~25px/s 上下循环滚动
   g_listBandTop = bandTop; g_listBandH = bandH; g_listOff = off;            // 供 rowHitAt 命中检测
   g_listVisN = visN; g_listAuto = autoScroll;
-
-  // 表头(居中块顶部):按启用列绘制各自标签;STATUS 标签随状态词偏移对齐其文本列。
-  static const char* COL_HEAD[DISP_NCOL] = { "St", "Model", "Ctx", "Tok", "Mem", "Turn" };
-  cv.setFont(&fonts::FreeMono9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_left);
-  cv.setTextColor(c565(0x6d6f75));
-  for (int k = 0; k < ncol; k++) {
-    int hx = (colIdx[k] == DC_STATUS) ? colX[k] + DISP_STATUS_WORD_DX : colX[k];
-    cv.drawString(COL_HEAD[colIdx[k]], hx, headY);
-  }
-  cv.drawFastHLine(46, bandTop - 3, SIZE - 92, c565(0x2a2c31));
 
   // 行(居中静态;>LIST_MAX_VIS 时上下循环滚动,双份无缝拼接;裁剪到行带)
   cv.setClipRect(40, bandTop, SIZE - 80, bandH);
@@ -785,50 +763,57 @@ static void renderListPage(int provIdx) {
       const Sess& s = p.sess[i];
       SessStatus st = (SessStatus)s.status;
       uint16_t dc = c565(statusDotColor(st));
-      int my = y + ROW_H / 2;
-      if (st == ST_EXECUTING)
-        cv.fillRoundRect(46, y + 3, SIZE - 92, ROW_H - 5, 6, c565(shade(color, -0.82f)));  // 高亮条:全行宽,与列数无关
-      // 状态点:仅当 STATUS 列启用时画(其余列不绘点)。
-      if (statusSlotX >= 0) {
-        if (st == ST_EXECUTING) cv.fillSmoothCircle(statusSlotX, my, 5, dc);   // 实心=运行
-        else { cv.drawCircle(statusSlotX, my, 5, dc); cv.drawCircle(statusSlotX, my, 4, dc); }   // 空心环=其余
+
+      if (st == ST_WAITING) {
+        cv.fillRoundRect(46, y + 3, SIZE - 92, ROW_H - 6, 6, c565(shade(0xffa94d, -0.82f)));
+        cv.fillRect(46, y + 3, 4, ROW_H - 6, c565(0xffa94d));
+      } else if (st == ST_EXECUTING) {
+        cv.fillRoundRect(46, y + 3, SIZE - 92, ROW_H - 6, 6, c565(shade(color, -0.82f)));
       }
-      cv.setFont(&fonts::FreeMono9pt7b); cv.setTextSize(1); cv.setTextDatum(middle_left);
-      for (int k = 0; k < ncol; k++) {
-        int cx = colX[k];
-        switch (colIdx[k]) {
-          case DC_STATUS: {
-            cv.setTextColor(dc); cv.drawString(statusShort(st), cx + DISP_STATUS_WORD_DX, my);
-            break;
-          }
-          case DC_MODEL: {
-            char md[16]; modelShort(s.model, md, sizeof(md));      // 紧凑:去空格(Opus 4.8 -> Opus4.8)
-            for (char* a = md, *b = md; ; ++a) { if (*a != ' ') *b++ = *a; if (!*a) break; }
-            cv.setTextColor(c565(0x8a8d94)); cv.drawString(md, cx, my);
-            break;
-          }
-          case DC_CTX: {
-            char cb[8]; snprintf(cb, sizeof(cb), "%d%%", s.ctxPct);
-            cv.setTextColor(c565(ctxColor(s.ctxPct))); cv.drawString(cb, cx, my);
-            break;
-          }
-          case DC_TOKENS: {
-            char tb[12]; fmtTokens(s.tokTotal, tb, sizeof(tb));
-            cv.setTextColor(c565(0xe6e8ec)); cv.drawString(tb, cx, my);
-            break;
-          }
-          case DC_MEMORY: {
-            char mb[10]; fmtMem(s.memKb, mb, sizeof(mb));
-            cv.setTextColor(c565(0x8a8d94)); cv.drawString(mb, cx, my);
-            break;
-          }
-          case DC_TURN: {
-            char rb[8]; snprintf(rb, sizeof(rb), "%d", s.turn);
-            cv.setTextColor(c565(0x8a8d94)); cv.drawString(rb, cx, my);
-            break;
-          }
-          default: break;
-        }
+
+      // 行1:状态点 + 名称 + 分支摘要 + 状态词
+      if (g_disp.col[DC_STATUS]) {
+        if (st == ST_EXECUTING || st == ST_WAITING) cv.fillSmoothCircle(58, y + 17, 5, dc);
+        else { cv.drawCircle(58, y + 17, 5, dc); cv.drawCircle(58, y + 17, 4, dc); }
+      }
+      char nm[28]; truncCp(s.name, 13, nm, sizeof(nm));
+      cv.loadFont(Grotesk20); cv.setTextDatum(middle_left); cv.setTextColor(c565(0xe6e8ec));
+      cv.drawString(nm, 72, y + 17);
+      int nameW = cv.textWidth(nm); cv.unloadFont();
+      if (g_disp.col[DC_BRANCH] && s.branch[0]) {
+        char br[36]; truncCp(s.branch, 12, br, sizeof(br));
+        char gb[48]; snprintf(gb, sizeof(gb), " %s +%d~%d", br, s.added, s.modified);
+        cv.setFont(&fonts::efontCN_16); cv.setTextDatum(middle_left);
+        cv.setTextColor(c565(0x7d828a));
+        cv.drawString(gb, min(250, 76 + nameW), y + 17);
+      }
+      if (g_disp.col[DC_STATUS]) {
+        cv.loadFont(JBMono16); cv.setTextDatum(middle_right); cv.setTextColor(dc);
+        cv.drawString(statusWord(st), SIZE - 52, y + 17); cv.unloadFont();
+      }
+
+      // 行2:model/ctx/tokens/turn/memory 的点分串
+      char md[16]; modelShort(s.model, md, sizeof(md));
+      for (char* a = md, *b = md; ; ++a) { if (*a != ' ') *b++ = *a; if (!*a) break; }
+      char tb[12]; fmtTokens(s.tokTotal, tb, sizeof(tb));
+      char mb[10]; fmtMem(s.memKb, mb, sizeof(mb));
+      char meta[96]; composeMetaLine(&g_disp, md, s.ctxPct, tb, s.turn, mb, meta, sizeof(meta));
+      if (meta[0]) {
+        cv.loadFont(JBMono16); cv.setTextDatum(middle_left);
+        cv.setTextColor(c565(st == ST_WAITING ? 0xffc180 : 0x8a8d94));
+        cv.drawString(meta, 72, y + 36); cv.unloadFont();
+      }
+
+      // 行3:执行任务优先;否则按 summary 列显示首条提示摘要
+      char line3[80];
+      if (s.task[0]) snprintf(line3, sizeof(line3), "* %s", s.task);
+      else if (g_disp.col[DC_SUMMARY] && s.summary[0]) snprintf(line3, sizeof(line3), "%s", s.summary);
+      else line3[0] = 0;
+      if (line3[0]) {
+        char short3[80]; truncCp(line3, 26, short3, sizeof(short3));
+        cv.setFont(&fonts::efontCN_16); cv.setTextDatum(middle_left);
+        cv.setTextColor(c565(s.task[0] ? 0xcfd2d8 : 0x757a82));
+        cv.drawString(short3, 72, y + 54);
       }
     }
   }
@@ -880,7 +865,9 @@ static void renderDetailPage() {
   if (detailProv == 0) drawClaude(CX, 118, color, mood, t, 0.62f);
   else                 drawCodex(CX, 118, color, mood, t, 0.62f);
   cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextDatum(middle_center);
-  uint16_t sw = c565(st == ST_EXECUTING ? shade(color, 0.25f) : st == ST_THINKING ? 0xffd479 : 0x8b9097);
+  uint16_t sw = c565(st == ST_EXECUTING ? shade(color, 0.25f)
+                   : st == ST_THINKING ? 0xffd479
+                   : st == ST_WAITING ? 0xffa94d : 0x8b9097);
   cv.setTextColor(sw); cv.drawString(statusWord(st), CX, 180);
 
   // 数据宫格:保持原「三宫格」CTX / TURN / TOKENS,各自由对应列开关控制(关掉则隐去该块,启用块均分居中)。
@@ -888,22 +875,40 @@ static void renderDetailPage() {
   char ctxv[8]; snprintf(ctxv, sizeof(ctxv), "%d%%", s.ctxPct);
   char turnv[8]; snprintf(turnv, sizeof(turnv), "%d", s.turn);
   char tokv[12]; fmtTokens(s.tokTotal, tokv, sizeof(tokv));   // K千/W万/B十亿
-  struct Tile { const char* label; const char* value; };
+  struct Tile { int col; const char* label; const char* value; };
   Tile tiles[3]; int nt = 0;
-  if (g_disp.col[DC_CTX])    tiles[nt++] = { "CTX",    ctxv };
-  if (g_disp.col[DC_TURN])   tiles[nt++] = { "TURN",   turnv };
-  if (g_disp.col[DC_TOKENS]) tiles[nt++] = { "TOKENS", tokv };
+  if (g_disp.col[DC_CTX])    tiles[nt++] = { DC_CTX,    "CTX",    ctxv };
+  if (g_disp.col[DC_TURN])   tiles[nt++] = { DC_TURN,   "TURN",   turnv };
+  if (g_disp.col[DC_TOKENS]) tiles[nt++] = { DC_TOKENS, "TOKENS", tokv };
   if (nt > 0) {
     const int tw = 96, th = 50, gap = 10, ty = 228;
     int span = nt * tw + (nt - 1) * gap;
     int cx0 = CX - span / 2 + tw / 2;                       // 第一块的圆心 x
-    for (int k = 0; k < nt; k++)
+    for (int k = 0; k < nt; k++) {
+      int tcx = cx0 + k * (tw + gap);
       drawStatTile(cx0 + k * (tw + gap), ty, tw, th, tiles[k].label, tiles[k].value, color);
+      if (tiles[k].col == DC_CTX && s.compactions > 0) {
+        char cc[8]; snprintf(cc, sizeof(cc), "%dc", s.compactions);
+        cv.loadFont(JBMono16); cv.setTextDatum(top_right); cv.setTextColor(c565(0xffa94d));
+        cv.drawString(cc, tcx + tw / 2 - 7, ty - th / 2 + 5); cv.unloadFont();
+      }
+    }
   }
+
+  // token 四件套:in/out/cache_r/cache_w(Codex 无 cache_w)
+  { char a[12], b[12], cr[12], cw[12];
+    fmtTokens(s.tokIn, a, sizeof(a)); fmtTokens(s.tokOut, b, sizeof(b));
+    fmtTokens(s.tokCacheR, cr, sizeof(cr)); fmtTokens(s.tokCacheW, cw, sizeof(cw));
+    char line[72];
+    if (detailProv == 1) snprintf(line, sizeof(line), "in %s  out %s  cR %s", a, b, cr);
+    else                 snprintf(line, sizeof(line), "in %s out %s cR %s cW %s", a, b, cr, cw);
+    cv.loadFont(JBMono16); cv.setTextDatum(middle_center); cv.setTextColor(c565(0x8a8d94));
+    cv.drawString(line, CX, 268); cv.unloadFont(); }
 
   // 任务/agent 名称(efontCN 可渲染中文与 ·;超宽 → 跑马灯循环)
   char buf[96];
   if (s.task[0]) snprintf(buf, sizeof(buf), "* %s", s.task);
+  else if (s.summary[0]) snprintf(buf, sizeof(buf), "\xE2\x80\x9C%s\xE2\x80\x9D", s.summary);
   else           snprintf(buf, sizeof(buf), "* idle");
   cv.setFont(&fonts::efontCN_16); cv.setTextColor(c565(s.task[0] ? 0xe6e8ec : 0x6f757d));
   const int taskWin = SIZE - 120, taskY = 288;            // 任务行可视窗 ~346px
@@ -1604,6 +1609,10 @@ static void handleAction(TouchAction a) {
       break;
     case ACT_TAP:                                    // 单击:主页 → 列表;列表点行 → 详情
       if (detailProv >= 0) break;
+      if (!g_listView && g_bannerProv >= 0 &&
+          g_tLastY >= g_bannerTop && g_tLastY <= g_bannerTop + g_bannerH) {
+        enterDetail(g_bannerProv, g_bannerIdx); break;
+      }
       if (g_listView) { if (PROV[page].nsess) enterDetail(page, g_tapRow >= 0 ? g_tapRow : 0); }
       else g_listView = true;
       break;
@@ -1615,16 +1624,16 @@ static void handleAction(TouchAction a) {
   }
 }
 
-// 长按 BtnA:详情→列表;列表→主页;主页→列表
+// 长按 BtnA:进入设置页
 static void btnALong() {
+  g_inSettings = true;
+  g_setSel = 0;
+}
+// 短按 BtnA:息屏亮屏;否则逐级返回
+static void btnAShort() {
+  if (g_dim) { g_dim = false; M5.Display.setBrightness(g_bright); return; }
   if (detailProv >= 0) { exitDetail(); return; }      // 详情 → 列表
   if (g_listView) { g_listView = false; return; }     // 列表 → 主页
-  g_listView = true;                                  // 主页 → 列表
-}
-// 短按 BtnA:详情翻下一会话;否则切 provider(跳过被禁用的 provider 页)
-static void btnAShort() {
-  if (detailProv >= 0) { int n = PROV[detailProv].nsess; if (n > 0) detailIdx = (detailIdx + 1) % n; }
-  else page = nextProv(page, 1);
 }
 
 void loop() {

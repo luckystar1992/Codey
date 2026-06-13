@@ -27,24 +27,6 @@ static inline DispCfg dispDefault() {
   return d;
 }
 
-// ---- 动态列布局(纯函数,host 可测) ----
-// 原 6 列的自然槽宽(像素)(后 2 列 summary/branch 不参与槽定位,置 0);全开时槽起点正好 = 原固定列 x(46,112,204,242,300,358)。
-// STATUS 槽含左侧状态点(点画在 slotX,状态词画在 slotX+DISP_STATUS_WORD_DX)。
-static const int DISP_COL_W[DISP_NCOL]   = { 66, 92, 38, 58, 58, 44, 0, 0 };  // status,model,ctx,tok,mem,turn,summary,branch
-static const int DISP_BAND_CENTER        = 224;   // 原列块 46..402 的中点 → 全开复现原位
-static const int DISP_STATUS_WORD_DX     = 12;    // 状态词相对状态点的右移量(原 colSt-colDot = 58-46)
-
-// 输入:8 个列开关 cfg[]。输出:启用列的有序索引 idx[] 与其槽起点 x 坐标 x[],返回启用列数 n。
-// 启用列按固定顺序(STATUS<MODEL<...<TURN)排列,保留各自自然槽宽,整块以 DISP_BAND_CENTER 居中。
-// 全开 → 复现原始 6 列 x;少列 → 重新铺满并居中。idx/x 容量须 >= DISP_NCOL。
-static inline int layoutColumns(const bool* cfg, int* idx, int* x) {
-  int n = 0, used = 0;
-  for (int i = 0; i < DISP_NCOL; i++) if (cfg[i]) { idx[n++] = i; used += DISP_COL_W[i]; }
-  int cur = DISP_BAND_CENTER - used / 2;   // 整块居中(used==0 时退化为中点,n=0)
-  for (int k = 0; k < n; k++) { x[k] = cur; cur += DISP_COL_W[idx[k]]; }
-  return n;
-}
-
 static inline SessStatus statusFromStr(const char* s) {
   if (!s) return ST_WAITING;
   if (!strcmp(s, "executing")) return ST_EXECUTING;
