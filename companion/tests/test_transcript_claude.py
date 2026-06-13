@@ -98,6 +98,15 @@ class TestTranscriptClaude(unittest.TestCase):
         r = parse_claude_transcript("\n".join([asst(1000), asst(2000), asst(3000)]))
         self.assertEqual(r["compactions"], 0)
 
+    def test_compaction_boundary_exact_30pct(self):
+        # 1000 -> 700 是恰好 30% 跌幅:不计(条件是严格 >30%)
+        def asst(ctx_in):
+            return A({"input_tokens": ctx_in, "output_tokens": 1,
+                      "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+                     [{"type": "text", "text": "ok"}])
+        r = parse_claude_transcript("\n".join([asst(1000), asst(700)]))
+        self.assertEqual(r["compactions"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
