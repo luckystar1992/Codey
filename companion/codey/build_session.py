@@ -3,6 +3,15 @@ from .context_window import context_window_for
 from .util import clamp_pct, project_name
 
 
+def _summary(first_prompt):
+    """首条用户提示截到 64 字节(UTF-8 安全,不切半个字)。"""
+    s = " ".join((first_prompt or "").split())   # 折叠换行/多空格
+    b = s.encode("utf-8")
+    if len(b) <= 64:
+        return s
+    return b[:64].decode("utf-8", "ignore")
+
+
 def build_claude_session(*, session_id, cwd, started_at, parsed, status,
                          git, ports, subagents, effort, memory_kb=0):
     cw = context_window_for(parsed.get("model"), parsed.get("max_context_tokens"))
@@ -25,6 +34,14 @@ def build_claude_session(*, session_id, cwd, started_at, parsed, status,
         "started_at": (started_at or 0) // 1000,
         "effort": effort or "",
         "memory": memory_kb or 0,            # 进程树常驻内存(KB);0=未知
+        "summary": _summary(parsed.get("first_prompt")),
+        "tokens": {
+            "in": parsed.get("total_input") or 0,
+            "out": parsed.get("total_output") or 0,
+            "cache_r": parsed.get("total_cache_read") or 0,
+            "cache_w": parsed.get("total_cache_create") or 0,
+        },
+        "compactions": parsed.get("compactions") or 0,
     }
 
 
@@ -49,4 +66,12 @@ def build_codex_session(*, parsed, started_at, status, git, ports, subagents, me
         "started_at": (started_at or 0) // 1000,
         "effort": parsed.get("effort") or "",
         "memory": memory_kb or 0,
+        "summary": _summary(parsed.get("first_prompt")),
+        "tokens": {
+            "in": parsed.get("total_input") or 0,
+            "out": parsed.get("total_output") or 0,
+            "cache_r": parsed.get("total_cache_read") or 0,
+            "cache_w": 0,
+        },
+        "compactions": parsed.get("compactions") or 0,
     }

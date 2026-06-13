@@ -49,5 +49,34 @@ class TestBuildSession(unittest.TestCase):
         self.assertEqual(s["turn"], 5)
 
 
+    def test_claude_summary_tokens_compactions(self):
+        parsed = {
+            "total_input": 180, "total_output": 30, "total_cache_read": 600, "total_cache_create": 500,
+            "last_context_tokens": 94000, "max_context_tokens": 94000, "turn_count": 23,
+            "model": "claude-opus-4-8", "current_task": "Edit x",
+            "git_branch": "main", "first_prompt": "帮我重构 agent 的对话内存管理实现",
+            "compactions": 2, "last_user_ts_ms": 0, "pending_tool": True,
+        }
+        s = build_claude_session(
+            session_id="sid1", cwd="/Users/zyc/code/Codey", started_at=1780000000000,
+            parsed=parsed, status="executing", git={"branch": "main", "added": 3, "modified": 12},
+            ports=[], subagents=0, effort="high", memory_kb=0)
+        self.assertEqual(s["tokens"], {"in": 180, "out": 30, "cache_r": 600, "cache_w": 500})
+        self.assertEqual(s["compactions"], 2)
+        self.assertTrue(s["summary"].startswith("帮我重构"))
+        self.assertLessEqual(len(s["summary"].encode("utf-8")), 64 + 3)  # 截断在 64 字节量级
+
+    def test_codex_cache_w_zero(self):
+        parsed = {"session_id": "x", "cwd": "/p", "model": "gpt-5.1-codex",
+                  "total_input": 10, "total_output": 5, "total_cache_read": 7,
+                  "last_context_tokens": 100, "context_window": 272000, "turn_count": 2,
+                  "git_branch": "main", "first_prompt": "hi", "current_task": "", "effort": "",
+                  "compactions": 0}
+        s = build_codex_session(parsed=parsed, started_at=0, status="waiting",
+                                git=None, ports=[], subagents=0, memory_kb=0)
+        self.assertEqual(s["tokens"]["cache_w"], 0)
+        self.assertEqual(s["summary"], "hi")
+
+
 if __name__ == "__main__":
     unittest.main()
