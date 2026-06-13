@@ -64,7 +64,15 @@ class TestBuildSession(unittest.TestCase):
         self.assertEqual(s["tokens"], {"in": 180, "out": 30, "cache_r": 600, "cache_w": 500})
         self.assertEqual(s["compactions"], 2)
         self.assertTrue(s["summary"].startswith("帮我重构"))
-        self.assertLessEqual(len(s["summary"].encode("utf-8")), 64 + 3)  # 截断在 64 字节量级
+        self.assertLessEqual(len(s["summary"].encode("utf-8")), 64)
+        # 超 64 字节:确实走截断分支,且严格不超 64 字节、不切半个字
+        long_prompt = "帮我重构" * 10   # 40 字 × 3 字节 = 120 字节 > 64
+        s_long = build_claude_session(
+            session_id="sid2", cwd="/tmp", started_at=0,
+            parsed={**parsed, "first_prompt": long_prompt},
+            status="executing", git=None, ports=[], subagents=0, effort="", memory_kb=0)
+        self.assertLessEqual(len(s_long["summary"].encode("utf-8")), 64)
+        self.assertTrue(s_long["summary"].startswith("帮我重构"))
 
     def test_codex_cache_w_zero(self):
         parsed = {"session_id": "x", "cwd": "/p", "model": "gpt-5.1-codex",
