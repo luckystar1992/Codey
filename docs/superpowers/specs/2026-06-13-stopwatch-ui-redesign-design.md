@@ -41,6 +41,7 @@
                                    │  HTTP(LAN)/ HTTPS(ngrok)
                                    ▼
 ┌──────────────────────── firmware (codey_dash, 466 圆屏) ─────────────────┐
+│ fonts/*.h   ── VLW 抗锯齿字体(JetBrains Mono / Space Grotesk,flash 数组)│
 │ codey_ui.h  ── 纯函数(host-testable):新增 composeMetaLine / 新 sortRank │
 │        ▼                                                                  │
 │ codey_dash.ino                                                            │
@@ -50,6 +51,41 @@
 │   handleAction     ── 横幅点击直达;BtnA 短按逐级返回 / 长按设置          │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 组件 0:渲染与字体管线(VLW 抗锯齿)
+
+### 0.1 现状与决策
+
+引擎**已是 LovyanGFX**(M5GFX/M5Unified 底层),圆弧/圆点本就抗锯齿(`fillSmoothCircle` + 自定义逐像素 AA 弧)。颗粒感/锯齿**几乎全部来自位图字体**:`FreeSans*pt7b`、`FreeMono*pt7b`(Adafruit GFX 1-bit)与 `efontCN_*`(中文位图)。
+
+**决策(brainstorming):不换引擎**,引入 LovyanGFX 原生 **VLW**(8-bit alpha 抗锯齿字体,`drawChar` 做逐像素 `fore*p + bg*(257-p)>>8` 混合)替换 Latin/数字/状态词/标签;动态中文(会话摘要等任意中文)**保留 efont 位图**(全量中文 VLW 体积 MB 级,ESP32-S3 flash 扛不住,且 LovyanGFX 无动态子集)。
+
+> 否决项:LVGL v9.5 整体迁移——需重写全部手绘(机器人动画/AA 弧/跑马灯),全屏 buffer 进不了 SRAM 有掉帧风险,而形状本已 AA,收益不抵成本。OpenFontRender 运行时 TTF——动态中文 AA 可行但增字形缓存/速度风险,本次不取。
+
+### 0.2 字体选型(全 OFL-1.1)
+
+| 用途 | 字体 | 渲染 |
+|---|---|---|
+| 数字 / 等宽标签 / 状态词(WAITING)/ 模型名 / 百分比 | **JetBrains Mono** | VLW(AA) |
+| 名称 / 标题(会话名、provider 名) | **Space Grotesk** | VLW(AA) |
+| 中文(摘要、"等你输入"、设置项、限流) | **得意黑 Smiley Sans**(预览用 Noto 近似) | efont 位图(无 AA) |
+
+### 0.3 VLW 生成与落地
+
+- **生成**:从 TTF 用 Processing「Create Font」或 lgfx/TFT_eSPI 字体工具导出 `.vlw`(8-bit alpha)。**Latin 子集**:`0-9 A-Z a-z` + 符号 `% · : / + ~ * . ,空格`(`·` = U+00B7 必含,行 2 分隔符用它)。⚙ 齿轮等图标用绘制图元或 efont,不进 VLW 子集。
+- **尺寸**:VLW 每文件单尺寸,按现用字号映射出若干 px 尺寸(约 small≈18 / body≈22 / big≈30,对应替换 9pt/12pt/18pt)。每文件 Latin 子集 ~15–35KB。
+- **存储**:转成 C 头数组烧进 flash(`loadFont(const uint8_t*)`),**不依赖文件系统**(LovyanGFX 无 TFT_eSPI 的 `loadFont(path)` 字符串重载;走数组最稳,arduino-cli 直接编入)。放 `sketches/codey_dash/fonts/`。
+- **混合**:VLW AA 读背景像素混合 → 必须**先绘背景再绘字**(现有渲染顺序已满足:mascot/弧/高亮条先画)。文本叠在高亮行上时背景=高亮色,混合正确。
+
+### 0.4 Flash 预算
+
+当前固件 2,357,635B(74%),余量 ~788KB。新增约 5–6 个 VLW(JetBrains Mono 3 尺寸 + Space Grotesk 2–3 尺寸)≈ 150–250KB;停用的 FreeSans/FreeMono GFX 字体随之不编入(略减)。预计落在 ~80% 以内,**实现时以 `build.sh` 实测为准**(超 90% 则减字号或收窄子集)。
+
+### 0.5 测试
+
+VLW 是设备端渲染,无纯函数可测 → 靠**编译过 + 真机观感**。`composeMetaLine` 等纯逻辑不受字体影响,host 测试照常。新增检查:build 后 flash 占用打印 < 90%。
 
 ---
 
@@ -207,20 +243,21 @@ Sess 结构(`session_store.h`)新增字段以承接:`char summary[64]`、`long t
 | companion | config 默认/合并新增两列开关 | `tests/test_config.py` |
 | firmware | `composeMetaLine` 列开关组合 / 截断 / UTF-8 | `sketches/codey_dash/test/codey_ui_test.cpp` |
 | firmware | `statusRank` waiting 优先 | 同上 |
-| firmware | 编译过 + 主机测试全绿 | `scripts/build.sh` + `run_tests.sh` |
+| firmware | 编译过 + flash 占用 < 90% + 主机测试全绿 | `scripts/build.sh` + `run_tests.sh` |
 
-真机验证(USB 接上后,与现有分支一并):刷机 → 三页观感 / 等待横幅 / 横幅点击直达 / token4 行 / 排序。
+真机验证(USB 接上后,与现有分支一并):刷机 → 三页观感 / **VLW 字体抗锯齿对比** / 等待横幅 / 横幅点击直达 / token4 行 / 排序。
 
 ---
 
 ## 范围边界(YAGNI)
 
-**做**:上述 5 个组件的增量。
-**不做**(本次明确排除):工具调用时间线可视化、chat 尾巴、文件访问审计、主页改雷达/表圈(那是方案 A/B)、摇晃手势重做、新设备页(MCP servers / orphan ports 独立页)。
+**做**:组件 0(VLW 字体抗锯齿)+ 组件 1–5 的增量。
+**不做**(本次明确排除):工具调用时间线可视化、chat 尾巴、文件访问审计、主页改雷达/表圈(那是方案 A/B)、摇晃手势重做、新设备页(MCP servers / orphan ports 独立页)、**动态中文 AA**(efont 保留)、**LVGL/OpenFontRender 迁移**。
 
 ## Self-Review 待办(写完文档后执行)
 
-- [ ] 占位扫描:无 TBD/TODO
-- [ ] 一致性:`layoutColumns` 退役与"列开关保留"不矛盾(开关留、定位删)——已澄清
-- [ ] 范围:单一实现计划可覆盖,无需拆子项目
-- [ ] 歧义:行 2 内联串 vs 列对齐——已明确选内联串
+- [x] 占位扫描:无 TBD/TODO
+- [x] 一致性:`layoutColumns` 退役与"列开关保留"不矛盾(开关留、定位删)——已澄清
+- [x] 一致性:VLW 行 2 分隔符 `·` 已纳入 Latin 子集;中文混排走 efont——已澄清
+- [x] 范围:单一实现计划可覆盖,无需拆子项目
+- [x] 歧义:行 2 内联串 vs 列对齐——已明确选内联串;文字 AA 路线 VLW vs LVGL——已明确选 VLW
