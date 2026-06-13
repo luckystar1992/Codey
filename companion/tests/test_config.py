@@ -45,9 +45,6 @@ def test_save_rejects_bad_engine(tmp_path, monkeypatch):
 
 def test_default_columns_include_summary_branch(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "CONFIG_PATH", str(tmp_path / "config.json"))
-    from codey import config
-    cols = config.get("display")["columns"]
-    assert "summary" in cols
-    assert "branch" in cols
-    assert cols["summary"] is True
-    assert cols["branch"] is True
+    cols = cfg.get("display")["columns"]
+    assert cols.get("summary") is True, "summary missing from default columns"
+    assert cols.get("branch") is True, "branch missing from default columns"
