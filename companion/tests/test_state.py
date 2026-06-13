@@ -72,12 +72,26 @@ class TestState(unittest.TestCase):
     def test_provider_limited_flag(self):
         cache = {"claude": [], "codex": []}
         tok = {"claude": {"prev": None, "val": 0}, "codex": {"prev": None, "val": 0}}
-        five = {"used_percentage": 100, "resets_at": 0}
-        with mock.patch.object(state_mod, "read_real_usage",
-                               return_value={"five_hour": five, "seven_day": None, "fresh": True}), \
-             mock.patch.object(state_mod, "read_codex_usage", return_value=None):
-            st = state_mod.build_state(cache, tok)
+
+        def build(real, codex):
+            with mock.patch.object(state_mod, "read_real_usage", return_value=real), \
+                 mock.patch.object(state_mod, "read_codex_usage", return_value=codex):
+                return state_mod.build_state(cache, tok)
+
+        # claude 5h 100% -> limited True
+        st = build({"five_hour": {"used_percentage": 100, "resets_at": 0},
+                    "seven_day": None, "fresh": True}, None)
         self.assertTrue(st["providers"][0]["limited"])
+        # claude 5h 99% -> False(边界)
+        st = build({"five_hour": {"used_percentage": 99, "resets_at": 0},
+                    "seven_day": None, "fresh": True}, None)
+        self.assertFalse(st["providers"][0]["limited"])
+        # 无数据 -> False(不误报)
+        st = build(None, None)
+        self.assertFalse(st["providers"][0]["limited"])
+        # codex session 100% -> limited True
+        st = build(None, {"session": {"pct": 100, "reset": 0}, "weekly": {"pct": 0, "reset": 0}})
+        self.assertTrue(st["providers"][1]["limited"])
 
     def test_sort_waiting_first(self):
         from codey.state import _sort_sessions

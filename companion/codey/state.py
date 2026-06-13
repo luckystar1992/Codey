@@ -6,10 +6,11 @@ from .quota import end_of_week_epoch, read_codex_usage, read_real_usage
 from .util import clamp_pct
 
 _RANK = {"waiting": 0, "executing": 1, "thinking": 2, "done": 3}
+_QUOTA_FULL = 100   # clamp_pct 上限;>= 即视为达到/超过配额(限流)
 
 
 def _sort_sessions(arr):
-    return sorted(arr, key=lambda s: (_RANK.get(s["status"], 2), -s.get("context_pct", 0)))
+    return sorted(arr, key=lambda s: (_RANK.get(s["status"], 99), -s.get("context_pct", 0)))
 
 
 def _num(v):
@@ -40,7 +41,7 @@ def build_state(session_cache, tok_rate, chime=None, asr_url="", display=None):
             "reset_epoch": (seven.get("resets_at") or 0) if seven_ok else end_of_week_epoch(),
         },
         "pending_reviews": 0,
-        "limited": bool(five_ok and clamp_pct(five["used_percentage"]) >= 100),
+        "limited": bool(five_ok and clamp_pct(five["used_percentage"]) >= _QUOTA_FULL),
         "model": (real.get("model") if real else None) or None,
         "active_count": c_agg["active_count"],
         "agg": {"dirty_repos": c_agg["dirty_repos"], "tokens_per_min": tok_rate["claude"]["val"]},
@@ -62,7 +63,7 @@ def build_state(session_cache, tok_rate, chime=None, asr_url="", display=None):
             "reset_epoch": cx_week["reset"] if cx_week else end_of_week_epoch(),
         },
         "pending_reviews": 0,
-        "limited": bool(cx_sess and (cx_sess["pct"] or 0) >= 100),
+        "limited": bool(cx_sess and (cx_sess["pct"] or 0) >= _QUOTA_FULL),
         "model": (codex_sessions[0]["model"] if codex_sessions else None) or None,
         "active_count": x_agg["active_count"],
         "agg": {"dirty_repos": x_agg["dirty_repos"], "tokens_per_min": tok_rate["codex"]["val"]},
