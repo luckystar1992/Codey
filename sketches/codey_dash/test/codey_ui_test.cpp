@@ -47,6 +47,18 @@ int main() {
     for (int i = 0; i < DISP_NCOL; i++) e.col[i] = false; // 全关 -> 空串
     composeMetaLine(&e, "Opus4.8", 71, "229M", 567, "59M", line, sizeof(line));
     assert(line[0] == 0);
+
+    // 单段:仅 turn 开 -> 无分隔符
+    DispCfg f = dispDefault();
+    for (int i = 0; i < DISP_NCOL; i++) f.col[i] = false;
+    f.col[DC_TURN] = true;
+    composeMetaLine(&f, "Opus4.8", 71, "229M", 567, "59M", line, sizeof(line));
+    assert(!strcmp(line, "t567"));
+
+    // 截断:小缓冲必须 NUL 结尾且不溢出
+    char tiny[10];
+    composeMetaLine(&d, "Opus4.8", 71, "229M", 567, "59M", tiny, sizeof(tiny));
+    assert(strlen(tiny) < sizeof(tiny));
   }
 
   // ---- fmtK ----
