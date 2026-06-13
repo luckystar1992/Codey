@@ -1291,6 +1291,12 @@ static void parseSession(JsonObject so, Sess& s) {
   s.ctxTok   = so["context_tokens"] | 0L;
   s.ctxWin   = so["context_window"] | 200000L;
   s.tokTotal = so["tokens_total"]   | 0L;
+  s.tokIn     = so["tokens"]["in"]      | 0L;
+  s.tokOut    = so["tokens"]["out"]     | 0L;
+  s.tokCacheR = so["tokens"]["cache_r"] | 0L;
+  s.tokCacheW = so["tokens"]["cache_w"] | 0L;
+  s.compactions = so["compactions"]     | 0;
+  copyStr(s.summary, sizeof(s.summary), so["summary"] | "");
   s.turn     = so["turn"]           | 0;
   s.added    = so["git"]["added"]    | 0;
   s.modified = so["git"]["modified"] | 0;
@@ -1338,6 +1344,8 @@ static void fetchState() {
           d.col[DC_TOKENS] = cols["tokens"] | true;
           d.col[DC_MEMORY] = cols["memory"] | true;
           d.col[DC_TURN]   = cols["turn"]   | true;
+          d.col[DC_SUMMARY] = cols["summary"] | true;
+          d.col[DC_BRANCH]  = cols["branch"]  | true;
           JsonVariantConst pv = disp["providers"];
           d.prov[0] = pv["claude"] | true;
           d.prov[1] = pv["codex"]  | true;
@@ -1349,6 +1357,7 @@ static void fetchState() {
         const char* id = pr["id"] | "";
         int i = (strcmp(id, "claude") == 0) ? 0 : (strcmp(id, "codex") == 0 ? 1 : -1);
         if (i < 0) continue;
+        PROV[i].limited   = pr["limited"] | false;
         PROV[i].sessUsed  = pr["session"]["used_pct"] | 0;
         PROV[i].weekUsed  = pr["weekly"]["used_pct"]  | 0;
         PROV[i].sessReset = pr["session"]["reset_epoch"] | 0L;

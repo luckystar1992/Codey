@@ -15,6 +15,9 @@ struct Sess {
   uint8_t status;         // SessStatus
   int     ctxPct;
   long    ctxTok, ctxWin, tokTotal;
+  long    tokIn, tokOut, tokCacheR, tokCacheW;   // token 四件套(与 tokTotal 同 long)
+  int     compactions;                            // 上下文压缩次数
+  char    summary[64];                            // 会话摘要(首条提示截断)
   int     turn;
   int     added, modified;
   int     subagents;
@@ -31,6 +34,7 @@ struct Prov {
   long sessReset, weekReset;      // reset epochs (parsed; not currently rendered)
   int  activeCount, dirtyRepos;
   long tokPerMin;
+  bool limited;                   // provider 配额已满(限流)
   Sess sess[MAX_SESS];
   int  nsess;
 };
