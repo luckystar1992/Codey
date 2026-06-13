@@ -19,7 +19,7 @@ int main() {
   assert(statusFromStr(nullptr)     == ST_WAITING);
   assert(!strcmp(statusWord(ST_EXECUTING), "EXECUTING"));
   assert(!strcmp(statusWord(ST_DONE), "DONE"));
-  assert(statusRank(ST_EXECUTING) == 0 && statusRank(ST_THINKING) == 1 && statusRank(ST_WAITING) == 2 && statusRank(ST_DONE) == 2);
+  assert(statusRank(ST_WAITING) == 0 && statusRank(ST_EXECUTING) == 1 && statusRank(ST_THINKING) == 2 && statusRank(ST_DONE) == 3);
 
   // ---- cpLen: UTF-8 码点计数 ----
   assert(cpLen("abc") == 3);
@@ -31,6 +31,23 @@ int main() {
   truncCp("短", 4, b, sizeof(b));      assert(!strcmp(b, "短"));
   truncCp("项目名称很长", 4, b, sizeof(b)); assert(!strcmp(b, "项目名\xE2\x80\xA6"));
   truncCp("abc", 3, b, sizeof(b));     assert(!strcmp(b, "abc"));
+
+  // ---- composeMetaLine: 行2点分串,按列开关取段 ----
+  {
+    DispCfg d = dispDefault();                 // 全开
+    char line[96];
+    composeMetaLine(&d, "Opus4.8", 71, "229M", 567, "59M", line, sizeof(line));
+    assert(!strcmp(line, "Opus4.8 \xC2\xB7 71% \xC2\xB7 229M \xC2\xB7 t567 \xC2\xB7 59M"));
+
+    d.col[DC_MODEL] = false; d.col[DC_MEMORY] = false;   // 关 model + memory
+    composeMetaLine(&d, "Opus4.8", 71, "229M", 567, "59M", line, sizeof(line));
+    assert(!strcmp(line, "71% \xC2\xB7 229M \xC2\xB7 t567"));
+
+    DispCfg e = dispDefault();
+    for (int i = 0; i < DISP_NCOL; i++) e.col[i] = false; // 全关 -> 空串
+    composeMetaLine(&e, "Opus4.8", 71, "229M", 567, "59M", line, sizeof(line));
+    assert(line[0] == 0);
+  }
 
   // ---- fmtK ----
   fmtK(950, b, sizeof(b));     assert(!strcmp(b, "950"));

@@ -9,8 +9,9 @@ enum SessStatus { ST_EXECUTING = 0, ST_THINKING = 1, ST_WAITING = 2, ST_DONE = 3
 
 // ---- companion-driven display config (GET /codey/state -> "display") ----
 // 6 列(会话列表表头/详情字段)+ 2 个 provider 页;缺省全开(旧 companion / 当前行为不变)。
-enum DispCol { DC_STATUS = 0, DC_MODEL = 1, DC_CTX = 2, DC_TOKENS = 3, DC_MEMORY = 4, DC_TURN = 5 };
-static const int DISP_NCOL  = 6;
+enum DispCol { DC_STATUS = 0, DC_MODEL = 1, DC_CTX = 2, DC_TOKENS = 3,
+               DC_MEMORY = 4, DC_TURN = 5, DC_SUMMARY = 6, DC_BRANCH = 7 };
+static const int DISP_NCOL  = 8;
 static const int DISP_NPROV = 2;   // 0=claude 1=codex
 
 struct DispCfg {
@@ -29,7 +30,7 @@ static inline DispCfg dispDefault() {
 // ---- 动态列布局(纯函数,host 可测) ----
 // 6 列的“自然槽宽”(像素);全开时槽起点正好 = 原固定列 x(46,112,204,242,300,358)。
 // STATUS 槽含左侧状态点(点画在 slotX,状态词画在 slotX+DISP_STATUS_WORD_DX)。
-static const int DISP_COL_W[DISP_NCOL]   = { 66, 92, 38, 58, 58, 44 };  // status,model,ctx,tok,mem,turn
+static const int DISP_COL_W[DISP_NCOL]   = { 66, 92, 38, 58, 58, 44, 0, 0 };  // status,model,ctx,tok,mem,turn,summary,branch
 static const int DISP_BAND_CENTER        = 224;   // 原列块 46..402 的中点 → 全开复现原位
 static const int DISP_STATUS_WORD_DX     = 12;    // 状态词相对状态点的右移量(原 colSt-colDot = 58-46)
 
@@ -59,8 +60,40 @@ static inline const char* statusWord(SessStatus s) {
     default:           return "WAITING";
   }
 }
-// sort rank for cross-provider merge: executing < thinking < (waiting|done)
-static inline int statusRank(SessStatus s) { return s == ST_EXECUTING ? 0 : s == ST_THINKING ? 1 : 2; }
+// sort rank for cross-provider merge: waiting < executing < thinking < done
+static inline int statusRank(SessStatus s) {
+  return s == ST_WAITING ? 0 : s == ST_EXECUTING ? 1 : s == ST_THINKING ? 2 : 3;
+}
+
+// 行2 元信息点分串:按列开关取 model/ctx/tokens/turn/memory 段,分隔符 " · "(U+00B7)。
+// summary/branch 不在此行(分别走行3/行1)。返回写入长度。
+static inline int composeMetaLine(const DispCfg* cfg, const char* modelShort, int ctxPct,
+                                  const char* tokensStr, int turn, const char* memStr,
+                                  char* out, size_t n) {
+  if (!out || n == 0) return 0;
+  out[0] = 0;
+  size_t len = 0;
+  char seg[40];
+  static const int ORDER[5] = { DC_MODEL, DC_CTX, DC_TOKENS, DC_TURN, DC_MEMORY };
+  for (int oi = 0; oi < 5; oi++) {
+    int col = ORDER[oi];
+    if (!cfg->col[col]) continue;
+    switch (col) {
+      case DC_MODEL:  snprintf(seg, sizeof(seg), "%s", modelShort ? modelShort : ""); break;
+      case DC_CTX:    snprintf(seg, sizeof(seg), "%d%%", ctxPct); break;
+      case DC_TOKENS: snprintf(seg, sizeof(seg), "%s", tokensStr ? tokensStr : ""); break;
+      case DC_TURN:   snprintf(seg, sizeof(seg), "t%d", turn); break;
+      case DC_MEMORY: snprintf(seg, sizeof(seg), "%s", memStr ? memStr : ""); break;
+      default: continue;
+    }
+    if (seg[0] == 0) continue;
+    const char* sep = (len > 0) ? " \xC2\xB7 " : "";   // " · " 仅在非首段前
+    int w = snprintf(out + len, n - len, "%s%s", sep, seg);
+    if (w < 0 || (size_t)w >= n - len) break;           // 截断保护
+    len += w;
+  }
+  return (int)len;
+}
 
 // ---- remote ASR url -> host ----
 // Extract the host from a websocket url: "wss://host/..." or "ws://host:port/..." ->
