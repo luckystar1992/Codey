@@ -80,5 +80,24 @@ class TestTranscriptClaude(unittest.TestCase):
         self.assertEqual(r["last_user_ts_ms"], 0)
 
 
+    def test_compaction_count(self):
+        # 三个 assistant turn:94k -> 120k(涨,不算)-> 40k(掉 >30%,算 1 次)
+        def asst(ctx_in):
+            return A({"input_tokens": ctx_in, "output_tokens": 1,
+                      "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+                     [{"type": "text", "text": "ok"}])
+        text = "\n".join([asst(94000), asst(120000), asst(40000)])
+        r = parse_claude_transcript(text)
+        self.assertEqual(r["compactions"], 1)
+
+    def test_compaction_none_when_growing(self):
+        def asst(ctx_in):
+            return A({"input_tokens": ctx_in, "output_tokens": 1,
+                      "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+                     [{"type": "text", "text": "ok"}])
+        r = parse_claude_transcript("\n".join([asst(1000), asst(2000), asst(3000)]))
+        self.assertEqual(r["compactions"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

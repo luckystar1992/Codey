@@ -30,6 +30,7 @@ def parse_claude_transcript(text):
         "last_context_tokens": 0, "max_context_tokens": 0, "turn_count": 0,
         "model": "", "version": "", "git_branch": "", "current_task": "", "first_prompt": "",
         "last_user_ts_ms": 0, "pending_tool": False,
+        "compactions": 0, "_prev_ctx": 0,
     }
     for line in str(text if text is not None else "").split("\n"):
         s = line.strip()
@@ -52,6 +53,9 @@ def parse_claude_transcript(text):
             r["total_cache_read"] += cr
             r["total_cache_create"] += cc
             ctx = (inp + cc) if (cr == 0 and cc > 0) else (inp + cr)
+            if r["_prev_ctx"] > 0 and ctx < r["_prev_ctx"] * 0.7:
+                r["compactions"] += 1
+            r["_prev_ctx"] = ctx
             r["last_context_tokens"] = ctx
             if ctx > r["max_context_tokens"]:
                 r["max_context_tokens"] = ctx
@@ -76,4 +80,5 @@ def parse_claude_transcript(text):
                 r["first_prompt"] = text_of((e.get("message") or {}).get("content")).strip()
             r["pending_tool"] = False
             r["last_user_ts_ms"] = 0 if synthetic else parse_ts_ms(e.get("timestamp"))
+    r.pop("_prev_ctx", None)
     return r
