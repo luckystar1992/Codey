@@ -26,6 +26,7 @@ class ChimeState:
     def __init__(self):
         self.seq = 0
         self.event = None        # {"agent":..,"seq":..} or None(本 tick 无新完成)
+        self.last = None         # 最近一次完成事件(持久,跨 tick 不清);供慢轮询设备读 seq 增量响铃
 
     def update(self, prev_cache, cur_cache):
         agents = detect(prev_cache, cur_cache)
@@ -33,4 +34,6 @@ class ChimeState:
         for agent in agents:
             self.seq += 1
             self.event = {"agent": agent, "seq": self.seq}     # 多个同 tick 取最后一个;seq 已各自 +1
+        if self.event is not None:
+            self.last = self.event                             # event 每 tick 重置;last 持久保留最新完成
         return self.event

@@ -169,7 +169,7 @@ class App:
     def state(self):
         with self.lock:
             cache, tok = self.session_cache, dict(self.tok_rate)
-            chime_event = self.chime.event
+            chime_event = self.chime.last      # 持久最新完成(非瞬时 event);设备 30s 轮询据 seq 增量响铃
             asr_url = self.ngrok.get("asr_url", "")
         return build_state(cache, tok, chime_event, asr_url=asr_url, display=config.get("display"))
 
