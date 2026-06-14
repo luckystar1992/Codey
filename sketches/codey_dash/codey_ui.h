@@ -154,6 +154,12 @@ static inline void fmtElapsed(long secs, char* out, size_t outSz) {
   else       snprintf(out, outSz, "%ldm", m);
 }
 
+// ---- epoch sanity ----
+// 合理 epoch 区间:拒绝未初始化 RTC / 离谱 NTP(早于 ~2023-11 或晚于 ~2030-03 视为无效)。
+static const long EPOCH_MIN = 1700000000L;   // ~2023-11-14
+static const long EPOCH_MAX = 1900000000L;   // ~2030-03-17
+static inline bool epochSane(long e) { return e > EPOCH_MIN && e < EPOCH_MAX; }
+
 // ---- model short name: "claude-opus-4-8"->"Opus 4.8", "gpt-5.1-codex"->"GPT-5.1" ----
 static inline void modelShort(const char* full, char* out, size_t outSz) {
   if (!out || outSz == 0) return;

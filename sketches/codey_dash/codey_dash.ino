@@ -1,16 +1,14 @@
-// codey_dash — real-time Claude Code / Codex agent-session monitor for the M5Stack StopWatch.
-//
-// Consumes /codey/state (companion, :8787) and shows live agent sessions across three pages,
-// switched with BtnA / shake / horizontal swipe:
-//   0  Dashboard — dual edge arc (Claude weekly% left / Codex right), two idle mascots framing
-//      the active-session count a·b, a cross-provider top-N session grid, and a dirty/tok-rate line.
-//   1  Claude session list — single weekly% arc + two rows per session (status·name·model·ctx%·tok·turn),
-//      vertically scrollable by touch drag.
-//   2  Codex session list — same, green.
-//   Detail — tap a session (or BtnA long-press): big animated mascot reflecting status + current
-//      task / git / context / subagents·ports; swipe or BtnA short-press to page through sessions.
-// Touch: drag=scroll, h-swipe=switch page/session, tap=open detail, double-tap=close.
-// True-black background, rendered to a full-screen PSRAM canvas for flicker-free animation.
+// codey_dash — real-time Claude Code / Codex agent-session monitor for the M5Stack StopWatch
+// (circular 466x466 AMOLED). Consumes /codey/state from the companion and shows a three-tier UI
+// per provider, navigated by touch (swipe/tap) + buttons + shake:
+//   Usage  — provider edge arc (weekly%), animated mascot, cross-end waiting banner, usage/weekly
+//            meters, model, session run/total, tok/min, wifi/battery.  (Claude / Codex, h-swipe)
+//   List   — three-line session cards: status·name·branch / model·ctx%·tok·turn / task-or-summary.
+//   Detail — big mascot + status, CTX/TURN/TOKENS tiles, token-four, ctx budget, task, git·ports.
+// Touch: tap=drill in (banner→waiting session), h-swipe=switch provider / page session in detail,
+//        swipe-up/down=descend/ascend tier. Buttons: BtnA short=back a tier / wake, long=Settings,
+//        BtnB=voice. Shake=next provider. Completion chime via companion state.chime (seq edge).
+// True-black background, full-screen PSRAM canvas for flicker-free animation; VLW AA + efont CJK.
 
 #include <M5Unified.h>
 #include <WiFi.h>           // STA 连接 + AP 热点 + scanNetworks
@@ -123,6 +121,11 @@ static volatile bool g_netReconnect = false; // reconfigWiFi 后让 netTask 重�
 static volatile bool g_netPause = false;     // 门户运行时暂停 netTask 的 WiFi 操作(避免双核争用 WiFi 栈)
 static StreamBufferHandle_t g_voiceSB = nullptr;  // 语音 PCM (主loop -> netTask)
 static bool     g_rtcSynced = false;
+// ---- 完成提示音(chime):companion 下发持久 {agent,seq};seq 增长 → 响一次 ----
+static volatile uint32_t g_chimeSeq = 0;     // 最新完成事件 seq(netTask 写,主loop 读)
+static volatile bool     g_chimeClaude = true;  // 该完成属 claude(880Hz)/codex(660Hz)
+static uint32_t g_chimePlayed = 0;           // 主loop 已响过的 seq
+static bool     g_chimeSynced = false;       // 首拉对齐:不为开机前的旧完成补响
 // ---- settings page ----
 static Preferences g_prefs;
 static bool     g_inSettings = false;
@@ -673,18 +676,29 @@ static void render() {
 static int g_bannerTop = 0, g_bannerH = 0, g_bannerProv = -1, g_bannerIdx = -1;
 static bool drawWaitBanner(int provIdx) {
   const Prov& p = PROV[provIdx];
-  int widx = -1;
-  for (int i = 0; i < p.nsess; i++) if ((SessStatus)p.sess[i].status == ST_WAITING) { widx = i; break; }
+  // 跨端统计 waiting 会话总数(R-HOME-02:多会话变体);记录首个供点击直达
+  int waitCount = 0, firstProv = -1, firstIdx = -1;
+  for (int pi = 0; pi < DISP_NPROV; pi++) {
+    const Prov& pp = PROV[pi];
+    for (int i = 0; i < pp.nsess; i++)
+      if ((SessStatus)pp.sess[i].status == ST_WAITING) {
+        if (firstProv < 0) { firstProv = pi; firstIdx = i; }
+        waitCount++;
+      }
+  }
   g_bannerProv = -1; g_bannerIdx = -1;
-  if (widx < 0 && !p.limited) return false;
+  if (waitCount == 0 && !p.limited) return false;
   const int by = 70, bh = 26; g_bannerTop = by - bh / 2; g_bannerH = bh;
   char buf[64];
   uint32_t col = p.limited ? 0xff5d5d : 0xffa94d;
   if (p.limited) snprintf(buf, sizeof(buf), "RATE LIMITED");
-  else {
-    g_bannerProv = provIdx; g_bannerIdx = widx;
-    char nm[24]; truncCp(p.sess[widx].name, 10, nm, sizeof(nm));
+  else if (waitCount == 1) {
+    g_bannerProv = firstProv; g_bannerIdx = firstIdx;
+    char nm[24]; truncCp(PROV[firstProv].sess[firstIdx].name, 10, nm, sizeof(nm));
     snprintf(buf, sizeof(buf), "%s 等你输入", nm);
+  } else {
+    g_bannerProv = firstProv; g_bannerIdx = firstIdx;   // 多会话:点进第一个等待会话
+    snprintf(buf, sizeof(buf), "%d 个会话在等你", waitCount);
   }
   cv.fillRoundRect(CX - 110, g_bannerTop, 220, bh, 13, c565(shade(col, -0.78f)));
   cv.drawRoundRect(CX - 110, g_bannerTop, 220, bh, 13, c565(col));
@@ -710,7 +724,7 @@ static void renderUsagePage(int provIdx) {
     cv.setTextDatum(middle_center); cv.setTextColor(c565(0x8a8d94));
     cv.drawString(mdl, CX, 226);
   }
-  long nowE = time(nullptr); bool epochOK = nowE > 1700000000L;
+  long nowE = time(nullptr); bool epochOK = epochSane(nowE);
   String sR = (epochOK && p.sessReset > nowE) ? fmtDur(p.sessReset - nowE) : String("");
   String wR = (epochOK && p.weekReset > nowE) ? fmtDur(p.weekReset - nowE) : String("");
   drawMeter(250, "usage",  p.sessUsed, sR, p.color);
@@ -850,12 +864,14 @@ static void renderDetailPage() {
   cv.setTextColor(c565(0xcfd2d8)); cv.drawString(nm, CX, 44);
 
   // 第二行:model · 已运行时长(efontCN 字体能渲染 ·,不再是方框)。MODEL 列关 → 只显时长。
-  long nowE = time(nullptr); bool epochOK = nowE > 1700000000L;
+  long nowE = time(nullptr); bool epochOK = epochSane(nowE);
   long elapsed = (epochOK && s.startedAt > 0) ? (nowE - s.startedAt) : 0;
   char el[16]; fmtElapsed(elapsed, el, sizeof(el));
-  char l2[48];
-  if (g_disp.col[DC_MODEL]) { char md[24]; modelShort(s.model, md, sizeof(md)); snprintf(l2, sizeof(l2), "%s · %s", md, el); }
-  else                        snprintf(l2, sizeof(l2), "%s", el);
+  char l2[64];
+  int p2 = 0;
+  if (g_disp.col[DC_MODEL]) { char md[24]; modelShort(s.model, md, sizeof(md)); p2 += snprintf(l2 + p2, sizeof(l2) - p2, "%s · ", md); }
+  p2 += snprintf(l2 + p2, sizeof(l2) - p2, "%s", el);
+  if (s.effort[0]) snprintf(l2 + p2, sizeof(l2) - p2, " · %s", s.effort);   // effort:此前解析后从不显示
   cv.setFont(&fonts::efontCN_16); cv.setTextDatum(middle_center);
   cv.setTextColor(c565(0x7d828a)); cv.drawString(l2, CX, 68);
 
@@ -927,9 +943,18 @@ static void renderDetailPage() {
   // git / subagents / ports 行(efontCN 渲染 ·)
   int n = snprintf(buf, sizeof(buf), "git %s +%d ~%d", s.branch[0] ? s.branch : "-", s.added, s.modified);
   if (s.subagents > 0) n += snprintf(buf + n, sizeof(buf) - n, " · %dsub", s.subagents);
-  if (s.nports > 0)    snprintf(buf + n, sizeof(buf) - n, " · :%d", s.ports[0]);
+  for (int pi = 0; pi < s.nports && n < (int)sizeof(buf) - 10; pi++)   // 全部端口(此前只显示 ports[0])
+    n += snprintf(buf + n, sizeof(buf) - n, "%s:%d", pi == 0 ? " · " : " ", s.ports[pi]);
   cv.setFont(&fonts::efontCN_16); cv.setTextColor(c565(0xc3c7cd)); cv.setTextDatum(middle_center);
   cv.setClipRect(48, 302, SIZE - 96, 22); cv.drawString(buf, CX, 312); cv.clearClipRect();
+
+  // ctx 预算原始值(把抽象 % 落到具体 token;此前 ctxTok/ctxWin 解析后从不显示)。空带 y340,圆屏安全居中。
+  if (s.ctxTok > 0) {
+    char ca[12], cwn[12]; fmtK(s.ctxTok, ca, sizeof(ca)); fmtK(s.ctxWin, cwn, sizeof(cwn));
+    char cbud[32]; snprintf(cbud, sizeof(cbud), "ctx %s / %s", ca, cwn);
+    cv.loadFont(JBMono16); cv.setTextDatum(middle_center); cv.setTextColor(c565(0x6d7077));
+    cv.drawString(cbud, CX, 340); cv.unloadFont();
+  }
 
   // 底部:位置点 + i/N
   int nd = p.nsess > 9 ? 9 : p.nsess;
@@ -1163,7 +1188,7 @@ static bool wifiConfigPortal() {
   return ok;
 }
 
-static bool timeSane(time_t e) { return e > 1700000000L && e < 1900000000L; }   // ~2023..2030, rejects garbage RTC
+static bool timeSane(time_t e) { return epochSane((long)e); }   // ~2023..2030, rejects garbage RTC(见 codey_ui.h)
 
 // clock = Beijing time (UTC+8), 24h. Prefer the system epoch (set from the Companion's ts / NTP;
 // localtime applies the +8 offset set by configTime); fall back to the on-board RTC otherwise.
@@ -1415,9 +1440,11 @@ static void fetchState() {
         PROV[i].nsess = n;
       }
       g_haveData = true; ok = true;
+      { JsonVariantConst ch = doc["chime"];               // 持久最新完成 {agent,seq};主loop 据 seq 增量响铃
+        if (!ch.isNull()) { g_chimeSeq = ch["seq"] | 0; g_chimeClaude = (strcmp(ch["agent"] | "", "codex") != 0); } }
       if (detailProv >= 0 && detailIdx >= PROV[detailProv].nsess) detailProv = -1;
       long ts = doc["ts"] | 0L;                      // Mac epoch -> set the device clock (NTP-independent)
-      if (ts > 1700000000L && ts < 1900000000L) {
+      if (epochSane(ts)) {
         struct timeval tv; tv.tv_sec = (time_t)ts; tv.tv_usec = 0; settimeofday(&tv, nullptr);
         readClock();
       }
@@ -1477,6 +1504,20 @@ static size_t capturedSamples() {
   if (!g_micOK) return 0;
   long s = (long)((millis() - g_voiceT0) / 1000.0f * REC_RATE);
   return (size_t)constrain(s, 0L, (long)MAX_SAMPLES);
+}
+
+// 任务完成提示音:与麦克风共享 ES8311 编解码器 —— 先停麦,响一段双音 chime,再恢复麦。
+// 仅在非语音态(麦空闲)调用;g_volume=0 静音。Claude 高八度,Codex 低八度。
+static void playChime(bool claude) {
+  if (g_volume == 0) return;
+  bool micWas = g_micOK;
+  if (micWas) M5.Mic.end();                       // 释放编解码器给扬声器
+  M5.Speaker.begin();
+  M5.Speaker.setVolume((uint8_t)map(g_volume, 0, 100, 40, 255));
+  M5.Speaker.tone(claude ? 880 : 660, 110); delay(130);   // tone 非阻塞,delay 让其播完
+  M5.Speaker.tone(claude ? 1320 : 990, 110); delay(130);
+  M5.Speaker.end();
+  if (micWas) g_micOK = M5.Mic.begin();           // 恢复麦克风(下次语音用)
 }
 
 // ---------- settings page ----------
@@ -1727,6 +1768,13 @@ void loop() {
     } else if (g_vphase == 3) {                           // RESULT
       if (now - g_resultT0 > 9000) { g_voice = false; g_vphase = 0; }
     }
+  }
+
+  // ---- 完成提示音:companion 的 chime.seq 增长时响一次(开机首拉对齐,不补开机前的旧完成) ----
+  if (!g_voice && g_haveData) {
+    uint32_t cseq = g_chimeSeq;
+    if (!g_chimeSynced) { g_chimePlayed = cseq; g_chimeSynced = true; }
+    else if (cseq != g_chimePlayed) { g_chimePlayed = cseq; playChime(g_chimeClaude); lastActiveMs = now; }
   }
 
   // ---- IMU: shake to switch page + raise/move to wake the screen ----

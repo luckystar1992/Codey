@@ -109,6 +109,15 @@ int main() {
   parseWssHost("wss://abcdefgh/x", tiny, sizeof(tiny));
   assert(!strcmp(tiny, "abcd"));   // truncated to n-1, NUL-terminated
 
+  // ---- epochSane: 合理 epoch 区间(拒绝未初始化 RTC / 离谱时间)----
+  assert(!epochSane(0));
+  assert(!epochSane(EPOCH_MIN));        // 边界:严格大于
+  assert(epochSane(EPOCH_MIN + 1));
+  assert(epochSane(1765000000L));       // ~2025-12,正常
+  assert(!epochSane(EPOCH_MAX));        // 边界:严格小于
+  assert(!epochSane(EPOCH_MAX + 1));
+  assert(!epochSane(-1));
+
   // ---- dispDefault: 缺省全开 ----
   {
     DispCfg d = dispDefault();
