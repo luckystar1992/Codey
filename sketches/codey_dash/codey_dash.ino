@@ -185,18 +185,32 @@ static void wsEvent(WStype_t type, uint8_t* payload, size_t len) {
   }
 }
 
-// ---------- voice overlay (meme-style: active mascot + streaming transcript) ----------
-// Sonar rings that breathe outward with the mic level — the "listening" energy cue that
-// replaces the old particle orb. The provider mascot is drawn on top by drawVoiceOverlay().
-static void drawListenRings(int cx, int cy, int baseR, uint32_t color, float amp, float t) {
-  const int RINGS = 3;
-  for (int i = 0; i < RINGS; i++) {
-    float phase = t * 0.9f - i * 0.45f;                          // staggered outward pulses
-    float k = phase - floorf(phase);                             // 0..1 expansion within a pulse
-    float r = baseR * (1.0f + k * (0.45f + amp * 0.9f));         // louder -> rings reach further
-    float fade = (1.0f - k) * (0.30f + amp * 0.55f);             // fade as they expand; brighter when loud
-    if (fade <= 0.02f) continue;
-    cv.drawCircle(cx, cy, (int)r, c565(shade(color, -0.55f + fade * 0.85f)));
+// ---------- voice visualizer ----------
+// 圆屏语音可视化:中心呼吸光球 + 一圈随麦克风电平起伏的径向声条(叠加行波 → 有机"声波环"灵动感)。
+// vphase: 1 听写(provider 色,随电平灵动) / 2 识别中(琥珀,缓转、低幅) / 3 结果(平静收束)。
+static void drawVoiceViz(int cx, int cy, float level, float t, uint32_t color, int vphase) {
+  level = level < 0 ? 0 : (level > 1 ? 1 : level);
+  const bool finalizing = (vphase == 2), result = (vphase == 3);
+  uint32_t base = finalizing ? 0xFFB454 : color;                 // 识别中转琥珀
+  const int N = 44; const float R0 = 60.0f, MAXLEN = 48.0f;
+  float spin  = (finalizing ? 1.6f : 2.4f) * t;                  // 行波转速(识别中更缓)
+  float drive = result ? 0.18f : (finalizing ? 0.32f : (0.30f + 0.70f * level));  // 整体幅度
+
+  // 中心呼吸光球(3D 着色:暗底 + 左上高光)
+  int coreR = (int)(18 + drive * 12);
+  cv.fillSmoothCircle(cx, cy, coreR + 7, c565(shade(base, -0.66f)));
+  cv.fillSmoothCircle(cx, cy, coreR,     c565(shade(base, result ? 0.15f : -0.04f)));
+  cv.fillSmoothCircle(cx - coreR / 4, cy - coreR / 4, (int)(coreR * 0.55f), c565(shade(base, 0.38f)));
+
+  // 径向声条:高度 = drive × 行波包络;越长越亮,端点加圆点更顺滑
+  for (int i = 0; i < N; i++) {
+    float a = (i / (float)N) * 2.0f * PI;
+    float w = 0.5f + 0.34f * sinf(a * 4.0f + spin) + 0.16f * sinf(a * 7.0f - spin * 1.3f);   // ~[0,1] 行波
+    float len = MAXLEN * drive * (0.30f + 0.70f * w); if (len < 2.0f) len = 2.0f;
+    float cs = cosf(a), sn = sinf(a), r2 = R0 + len;
+    uint16_t cc = c565(shade(base, -0.15f + (len / MAXLEN) * 0.6f));
+    cv.drawLine(cx + (int)(R0 * cs), cy + (int)(R0 * sn), cx + (int)(r2 * cs), cy + (int)(r2 * sn), cc);
+    cv.fillSmoothCircle(cx + (int)(r2 * cs), cy + (int)(r2 * sn), 2, c565(shade(base, 0.25f)));
   }
 }
 
@@ -239,12 +253,9 @@ static void drawVoiceOverlay() {
   const bool result  = (g_vphase == 3);
   const float amp = (g_vphase == 1) ? constrain(g_micLevel, 0.06f, 1.0f) : 0.16f;
 
-  // 1) 就地「正在听」动画:听写环 + 中心脉冲点(随麦克风电平呼吸)
-  const int ry = hasText ? 300 : CY + 8;
-  if (g_vphase == 1 || g_vphase == 2)
-    drawListenRings(CX, ry, (int)(64 * (1.0f + amp * 0.2f)), color, amp, t);
-  cv.fillSmoothCircle(CX, ry, (int)(13 + amp * 11), c565(shade(color, result ? 0.2f : -0.05f)));
-  cv.fillSmoothCircle(CX, ry, (int)(13 + amp * 11) - 4, c565(shade(color, -0.55f)));
+  // 1) 就地「正在听」动画:圆屏径向声波环(随麦克风电平起伏 + 行波灵动)
+  const int ry = hasText ? 296 : CY + 6;
+  drawVoiceViz(CX, ry, (g_vphase == 1) ? amp : 0.0f, t, color, g_vphase);
 
   // 2) 流式转写(顶部):Latin VLW 抗锯齿 / CJK efont;warm 实时 → white 定稿
   if (hasText) {
