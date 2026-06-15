@@ -149,6 +149,13 @@ def make_backend():
     return b
 
 
+# 设备「切到此会话」:codey_companion 注入 session_id -> agent PID 的解析器。
+_resolve_pid = None
+def set_pid_resolver(fn):
+    global _resolve_pid
+    _resolve_pid = fn
+
+
 async def handle(ws, make_backend=make_backend, paster=None):
     if paster is None:
         paster = default_paster()
@@ -241,6 +248,17 @@ async def handle(ws, make_backend=make_backend, paster=None):
                     if paste_on():
                         try: paster.clear()
                         except Exception: pass
+                elif t == "focus":                       # 设备详情页点屏「切到此会话」→ 切 macOS 终端 tab
+                    sid = data.get("session") or ""
+                    pid = _resolve_pid(sid) if _resolve_pid else 0
+                    from codey import focus as _focus
+                    ok, why = await asyncio.get_event_loop().run_in_executor(   # osascript 阻塞 → 丢线程池,不卡 loop
+                        None, _focus.focus_pid, pid)
+                    print(f"[focus] session={sid} pid={pid} -> {ok} ({why})", flush=True)
+                    try:
+                        await ws.send(json.dumps({"type": "focus_ack", "ok": bool(ok), "reason": why}))
+                    except Exception:
+                        pass
     except websockets.ConnectionClosed:
         pass
     finally:

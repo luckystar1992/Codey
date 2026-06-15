@@ -98,6 +98,8 @@ static char           g_asrUrl[160] = {0};         // Companion /codey/state 下
 static char     g_model[48] = {0};   // Claude 模型名(头像下),netTask 写 主loop 读
 static char     g_codexModel[48] = {0};  // Codex 最常用模型名(头像下)
 static volatile int  g_netListenReq = 0;     // 1=start 2=stop (主loop -> netTask)
+static volatile bool g_netFocusReq = false;  // true=发 focus(详情页点屏切到此会话;主loop -> netTask)
+static char          g_focusSid[40] = {0};   // 要切到的会话 id(主loop 写,netTask 读)
 static volatile bool g_netReconnect = false; // reconfigWiFi 后让 netTask 重连
 static volatile bool g_netPause = false;     // 门户运行时暂停 netTask 的 WiFi 操作(避免双核争用 WiFi 栈)
 static StreamBufferHandle_t g_voiceSB = nullptr;  // 语音 PCM (主loop -> netTask)
@@ -142,6 +144,14 @@ static void wsListen(bool start) {            // listen-control messages (xiaozh
   } else {
     g_ws.sendTXT("{\"type\":\"listen\",\"state\":\"stop\"}");
   }
+}
+
+// 详情页点屏「切到此会话」:把会话 id 发给 companion,由其切 macOS 终端 tab。
+static void wsFocus(const char* sid) {
+  if (!g_wsConn || !sid || !sid[0]) return;
+  char m[80];
+  snprintf(m, sizeof(m), "{\"type\":\"focus\",\"session\":\"%.48s\"}", sid);
+  g_ws.sendTXT(m);
 }
 
 static void wsEvent(WStype_t type, uint8_t* payload, size_t len) {
@@ -610,8 +620,16 @@ static void handleAction(TouchAction a) {
         else g_listView = false;                     // 已到顶 → 列表 → 主页
       }
       break;
-    case ACT_TAP:                                    // 单击:主页 → 列表;列表点行 → 详情
-      if (detailProv >= 0) break;
+    case ACT_TAP:                                    // 单击:详情→切 Mac 终端 tab;主页→列表;列表点行→详情
+      if (detailProv >= 0) {                          // 详情页点屏:确认切到此会话的 macOS 终端 tab
+        const Prov& p = PROV[detailProv];
+        if (detailIdx >= 0 && detailIdx < p.nsess && p.sess[detailIdx].id[0]) {
+          strncpy(g_focusSid, p.sess[detailIdx].id, sizeof(g_focusSid) - 1);
+          g_focusSid[sizeof(g_focusSid) - 1] = 0;
+          g_netFocusReq = true;                        // netTask 发 focus
+        }
+        break;
+      }
       if (!g_listView && g_bannerProv >= 0 &&
           g_tLastY >= g_bannerTop && g_tLastY <= g_bannerTop + g_bannerH) {
         enterDetail(g_bannerProv, g_bannerIdx); break;

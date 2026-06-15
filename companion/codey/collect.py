@@ -80,7 +80,7 @@ def collect_sessions():
             session_id=d["session_id"], cwd=d["cwd"], started_at=d["started_at"], parsed=parsed,
             status=status, git=git, ports=ports_for_tree(pmap, ports_map, d["pid"]),
             subagents=discover.count_subagents(d["subagents_dir"]), effort="",
-            memory_kb=memory_for_tree(pmap, d["pid"])))
+            memory_kb=memory_for_tree(pmap, d["pid"]), pid=d["pid"]))
 
     codex = []
     seen = set()

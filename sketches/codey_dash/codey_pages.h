@@ -304,6 +304,12 @@ static void renderDetailPage() {
     cv.drawString(cbud, CX, 340); cv.unloadFont();
   }
 
+  // 点屏切 Mac 终端 tab 的提示(仅 WS 连上时显示,避免离线误导)
+  if (g_wsConn) {
+    cv.setFont(&fonts::efontCN_16); cv.setTextDatum(middle_center); cv.setTextColor(c565(0x55585f));
+    cv.drawString("点屏 → 切到 Mac", CX, 384);
+  }
+
   // 底部:位置点 + i/N
   int nd = p.nsess > 9 ? 9 : p.nsess;
   char pos[12]; snprintf(pos, sizeof(pos), "%d/%d", detailIdx + 1, p.nsess);

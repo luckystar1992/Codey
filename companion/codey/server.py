@@ -173,6 +173,17 @@ class App:
             asr_url = self.ngrok.get("asr_url", "")
         return build_state(cache, tok, chime_event, asr_url=asr_url, display=config.get("display"))
 
+    def pid_for_session(self, sid):
+        """会话 id → agent PID(设备「切到此会话」时 companion 据此找终端 tab);找不到返回 0。"""
+        if not sid:
+            return 0
+        with self.lock:
+            for agent in ("claude", "codex"):
+                for s in self.session_cache.get(agent, []):
+                    if s.get("id") == sid:
+                        return s.get("pid") or 0
+        return 0
+
 
 def make_handler(app):
     class Handler(BaseHTTPRequestHandler):

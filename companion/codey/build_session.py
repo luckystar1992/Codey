@@ -13,11 +13,12 @@ def _summary(first_prompt):
 
 
 def build_claude_session(*, session_id, cwd, started_at, parsed, status,
-                         git, ports, subagents, effort, memory_kb=0):
+                         git, ports, subagents, effort, memory_kb=0, pid=0):
     cw = context_window_for(parsed.get("model"), parsed.get("max_context_tokens"))
     ctx_tok = parsed.get("last_context_tokens") or 0
     return {
         "id": session_id,
+        "pid": pid or 0,                     # agent 进程 PID(设备「切到此会话」时据此找终端 tab)
         "name": project_name(cwd),
         "status": status,
         "model": parsed.get("model") or "",
@@ -50,6 +51,7 @@ def build_codex_session(*, parsed, started_at, status, git, ports, subagents, me
     ctx_tok = parsed.get("last_context_tokens") or 0
     return {
         "id": parsed.get("session_id"),
+        "pid": 0,                            # codex 会话来自 rollout 文件,无活进程 PID(暂不支持切 tab)
         "name": project_name(parsed.get("cwd")),
         "status": status,
         "model": parsed.get("model") or "",
