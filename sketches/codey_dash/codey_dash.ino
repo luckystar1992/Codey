@@ -67,18 +67,17 @@ static uint32_t g_voiceT0 = 0;       // millis() when the voice overlay started
 static volatile bool g_wifi = false; // WiFi connected (主loop 写, netTask 读)
 static char     g_ssid[48] = {0};    // connected SSID (bottom, marquee if long)
 static bool     g_micOK = false;     // microphone available
-static int16_t  g_micBuf[256];       // (legacy, unused)
 static float    g_micLevel = 0.12f;  // smoothed mic level (0..1)
-// ---- streaming voice: 主loop 采集 -> StreamBuffer -> netTask sendBIN -> sherpa partials ----
+// ---- streaming voice: 小段双缓冲连续录音 -> StreamBuffer -> netTask sendBIN -> sherpa partials ----
+// 关键:M5.Mic.record(buf,N) 要录满 N 才放槽;用一次大 N(20s)会让连续开停时第3次 record() 阻塞主loop,
+// 且 end() 在录音中会死等当前槽录完。改为每段 32ms、双缓冲(始终2段在录),槽 ≤64ms 内释放 → 不卡不冻。
 static int      g_vphase = 0;        // 0 off, 1 listening/streaming, 2 finalizing, 3 result
 static volatile uint16_t g_voiceSeq = 0;   // 每次会话自增;只认当前 seq 的 stt(丢弃上次迟到结果)
 static char     g_transcript[256] = {0};   // live/final transcript (netTask 写, 主loop 读)
 static const int    REC_RATE = 16000;
-static const size_t MAX_SAMPLES = (size_t)(REC_RATE * 20);     // 20s max listen window(异步 toggle;留 PSRAM 给语音底图缓存)
-static const size_t STREAM_CHUNK = 512;                        // samples per WS frame (~32ms)
-static int16_t* g_audioBuf = nullptr;// continuous mic-capture buffer (PSRAM)
-static size_t   g_sentSamples = 0;   // 主loop 已写入 StreamBuffer 的样本位置
-static size_t   g_recEnd = 0;        // capture length at stop (flush up to here)
+static const size_t STREAM_CHUNK = 512;                        // 每段/每 WS 帧样本数(~32ms)
+static int16_t  g_seg[2][STREAM_CHUNK];                        // 双缓冲小段录音(FIFO ping-pong)
+static int      g_segHead = 0;                                 // 下一个待消费(队首)的段缓冲
 static bool     g_heardSpeech = false;
 static uint32_t g_silenceT0 = 0;     // start of trailing silence -> auto-stop
 static uint32_t g_resultT0 = 0;      // when the result was shown (dismiss timeout)
@@ -439,10 +438,8 @@ void setup() {
   Serial.printf("ring sprites: %d %d  voiceBg: %d\n", g_ringAok, g_ringBok, g_voiceBgOk);
 
   M5.Speaker.end();                       // free the shared codec for the mic
-  g_micOK = M5.Mic.begin();
-  g_audioBuf = (int16_t*) ps_malloc(MAX_SAMPLES * 2);     // continuous mic-capture buffer (PSRAM)
-  Serial.printf("Mic begin=%d  IMU enabled=%d  audioBuf=%p\n", g_micOK, M5.Imu.isEnabled(), g_audioBuf);
-  if (!g_audioBuf) Serial.println("ERROR: audio buffer alloc failed (PSRAM) — voice disabled");
+  g_micOK = M5.Mic.begin();               // 录音用双缓冲小段 g_seg[2](静态,无需 PSRAM 大缓冲)
+  Serial.printf("Mic begin=%d  IMU enabled=%d\n", g_micOK, M5.Imu.isEnabled());
 
   // ---- WiFi: 多网络自动连接(记忆历史) -> 都失败则自研配置门户 ----
   wifiStoreLoad(g_prefs);                          // 历史网络(SSID/密码/连接次数),按 count 降序
@@ -483,19 +480,6 @@ static void reconfigWiFi() {                     // 设置页 -> 打开自研 Wi
     g_netReconnect = true;                       // netTask 重新解析 Mac + 重连 WS + fetch(不在主loop阻塞)
   }
   bootMs = millis();                             // reset the animation clock
-}
-
-// how many mic samples have been captured since listening started (clamped to the buffer)
-static size_t capturedSamples() {
-  if (!g_micOK) return 0;
-  long s = (long)((millis() - g_voiceT0) / 1000.0f * REC_RATE);
-  return (size_t)constrain(s, 0L, (long)MAX_SAMPLES);
-}
-
-// 立即停止录音并复位 Mic。M5.Mic 是双缓冲槽:提前停录(如 2s 取消)那一槽仍占着录满 MAX_SAMPLES;
-// 不释放则连开几轮后 record() 会阻塞主loop 等旧录音录完(几秒卡顿)。end()+begin() 立刻释放。
-static void voiceStopMic() {
-  if (g_micOK && M5.Mic.isRecording()) { M5.Mic.end(); g_micOK = M5.Mic.begin(); }
 }
 
 // 任务完成提示音:与麦克风共享 ES8311 编解码器 —— 先停麦,响一段双音 chime,再恢复麦。
@@ -707,24 +691,25 @@ void loop() {
     if (g_inSettings) {
       settingsButtons();                                   // BtnA = down, BtnB = confirm
     } else if (!g_voice && M5.BtnB.wasPressed() && !M5.BtnA.isPressed()) {   // 按一下右键 → 开录(异步 toggle,免按住)
-      voiceStopMic();                                                        // 先释放上一轮残留录音的双缓冲槽(防 record() 阻塞主loop)
       g_voice = true; g_voiceT0 = now; g_micLevel = 0.12f; g_voiceSeq++;     // 新会话序号(隔离上次迟到结果)
       g_transcript[0] = 0; g_heardSpeech = false; g_silenceT0 = 0; g_noiseFloor = 0.06f;
-      g_sentSamples = 0; g_recEnd = 0; g_finalReqT0 = 0; g_sttFinal = false;
+      g_finalReqT0 = 0; g_sttFinal = false;
       g_voiceBgDirty = true;                               // 重建语音底图缓存(当前 session 页)
       // 目标会话:详情页发起 → 取当前会话 id(流式同步进它的 Mac 终端输入);否则空(回退:停录粘贴到前台)
       if (detailProv >= 0 && detailIdx >= 0 && detailIdx < PROV[detailProv].nsess)
         { strncpy(g_voiceSid, PROV[detailProv].sess[detailIdx].id, sizeof(g_voiceSid) - 1); g_voiceSid[sizeof(g_voiceSid) - 1] = 0; }
       else g_voiceSid[0] = 0;
-      if (g_micOK && g_audioBuf && g_wsConn) {
+      if (g_micOK && g_wsConn) {
         g_vphase = 1;
         if (g_voiceSB) xStreamBufferReset(g_voiceSB);
         g_netListenReq = 1;                                // netTask -> listen:start
-        M5.Mic.record(g_audioBuf, MAX_SAMPLES, REC_RATE);
-        Serial.println("[voice] streaming (toggle)");
+        g_segHead = 0;                                     // 双缓冲:先排 2 段,始终保持 2 段在录(无缝)
+        M5.Mic.record(g_seg[0], STREAM_CHUNK, REC_RATE);
+        M5.Mic.record(g_seg[1], STREAM_CHUNK, REC_RATE);
+        Serial.println("[voice] streaming (seg x2)");
       } else {                                             // can't stream -> show why
         g_vphase = 3; g_resultT0 = now;
-        strncpy(g_transcript, !g_micOK ? "麦克风不可用" : !g_wsConn ? "语音服务未连接" : "缓冲不可用", sizeof(g_transcript) - 1);
+        strncpy(g_transcript, !g_micOK ? "麦克风不可用" : "语音服务未连接", sizeof(g_transcript) - 1);
         g_transcript[sizeof(g_transcript) - 1] = 0;
       }
     } else if (g_voice && M5.BtnA.wasPressed()) {                            // 左键:任意阶段立即退出(全程可打断)
@@ -732,7 +717,7 @@ void loop() {
       g_voice = false; g_vphase = 0; g_voiceSeq++;
       Serial.println("[voice] aborted (BtnA)");
     } else if (g_voice && g_vphase == 1 && M5.BtnB.wasPressed()) {           // 录音中:右键 → 停录识别
-      if (now - g_voiceT0 > 250) { g_recEnd = capturedSamples(); g_vphase = 2; g_finalReqT0 = 0; }  // <250ms 视为起录抖动,忽略
+      if (now - g_voiceT0 > 250) { g_vphase = 2; g_finalReqT0 = 0; }         // <250ms 视为起录抖动,忽略;在录尾段任其自然完成
     } else if (g_voice && g_vphase == 2 && M5.BtnB.wasPressed()) {           // 识别中:右键 → 放弃等待立即退出(不卡 2.5s)
       if (g_voiceSid[0]) g_netListenReq = 3;
       g_voice = false; g_vphase = 0; g_voiceSeq++;
@@ -750,32 +735,25 @@ void loop() {
 
   if (g_inSettings) { renderSettings(); delay(16); return; }   // settings page owns the screen
 
-  // ---- streaming voice: send mic PCM chunks over WebSocket; server partials arrive in wsEvent ----
+  // ---- streaming voice: 小段双缓冲连续录音 → 每段录满即发 WS(server partials arrive in wsEvent) ----
   if (g_voice) {
-    if (g_vphase == 1) {                                  // LISTENING + streaming
-      size_t cap = capturedSamples();
-      while (g_sentSamples + STREAM_CHUNK <= cap) {       // stream each newly-captured ~32ms chunk
-        int16_t* chunk = g_audioBuf + g_sentSamples;
-        double s = 0; for (size_t i = 0; i < STREAM_CHUNK; i++) { double v = chunk[i]; s += v * v; }
-        float lvl = sqrtf(s / STREAM_CHUNK) / 2500.0f;    // VAD level + adaptive floor (hysteresis)
+    if (g_vphase == 1) {                                  // LISTENING:消费已录满的段 + 立刻补录(保持 2 段在录)
+      int guard = 0;
+      while (g_micOK && M5.Mic.isRecording() < 2 && guard++ < 4) {   // 有空闲槽 = 队首段 g_seg[g_segHead] 已录满
+        int16_t* seg = g_seg[g_segHead];
+        double s = 0; for (size_t i = 0; i < STREAM_CHUNK; i++) { double v = seg[i]; s += v * v; }
+        float lvl = sqrtf(s / STREAM_CHUNK) / 2500.0f;    // VAD level + adaptive floor
         g_micLevel += (lvl - g_micLevel) * 0.4f;
         g_noiseFloor += (g_micLevel - g_noiseFloor) * (g_micLevel < g_noiseFloor ? 0.2f : 0.01f);
-        float on = g_noiseFloor + 0.12f, off = g_noiseFloor + 0.06f;
-        if (g_micLevel > on) { g_heardSpeech = true; g_silenceT0 = 0; }
-        else if (g_micLevel < off) { if (g_heardSpeech && g_silenceT0 == 0) g_silenceT0 = now; }
-        if (g_voiceSB) xStreamBufferSend(g_voiceSB, (uint8_t*)chunk, STREAM_CHUNK * 2, 0);  // -> netTask
-        g_sentSamples += STREAM_CHUNK;
+        if (g_micLevel > g_noiseFloor + 0.12f) g_heardSpeech = true;
+        if (g_voiceSB) xStreamBufferSend(g_voiceSB, (uint8_t*)seg, STREAM_CHUNK * 2, 0);   // -> netTask
+        if (!M5.Mic.record(g_seg[g_segHead], STREAM_CHUNK, REC_RATE)) break;               // 补回该槽
+        g_segHead ^= 1;
       }
-      bool maxed = (cap >= MAX_SAMPLES) || (g_micOK && !M5.Mic.isRecording());   // 15s 上限/录满兜底;停录由松手触发
-      if (maxed) { g_recEnd = capturedSamples(); g_vphase = 2; g_finalReqT0 = 0; }
-    } else if (g_vphase == 2) {                           // FINALIZE: flush tail, await the final stt
-      while (g_sentSamples < g_recEnd) {                  // flush remaining audio (not real-time bound now)
-        size_t n = g_recEnd - g_sentSamples; if (n > STREAM_CHUNK) n = STREAM_CHUNK;
-        if (g_voiceSB) xStreamBufferSend(g_voiceSB, (uint8_t*)(g_audioBuf + g_sentSamples), n * 2, 0);
-        g_sentSamples += n;
-      }
-      if (g_finalReqT0 == 0) { g_netListenReq = 2; g_finalReqT0 = now; }  // netTask -> listen:stop (finalize)
-      if (g_sttFinal || now - g_finalReqT0 > 2500) {                    // got the final result (or 2.5s 超时,可按键提前取消)
+      if (now - g_voiceT0 > 20000) { g_vphase = 2; g_finalReqT0 = 0; }    // 20s 上限兜底(停录由按键触发)
+    } else if (g_vphase == 2) {                           // FINALIZE:请求 final 并等待(在录尾段任其自然完成放槽)
+      if (g_finalReqT0 == 0) { g_netListenReq = 2; g_finalReqT0 = now; }  // netTask -> listen:stop
+      if (g_sttFinal || now - g_finalReqT0 > 2500) {                     // 拿到 final(或 2.5s 超时,可按键提前打断)
         if (g_transcript[0] == 0) { strncpy(g_transcript, "(没听清)", sizeof(g_transcript) - 1); g_transcript[sizeof(g_transcript) - 1] = 0; }
         g_vphase = 3; g_resultT0 = now;
       }
