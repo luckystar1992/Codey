@@ -492,6 +492,12 @@ static size_t capturedSamples() {
   return (size_t)constrain(s, 0L, (long)MAX_SAMPLES);
 }
 
+// 立即停止录音并复位 Mic。M5.Mic 是双缓冲槽:提前停录(如 2s 取消)那一槽仍占着录满 MAX_SAMPLES;
+// 不释放则连开几轮后 record() 会阻塞主loop 等旧录音录完(几秒卡顿)。end()+begin() 立刻释放。
+static void voiceStopMic() {
+  if (g_micOK && M5.Mic.isRecording()) { M5.Mic.end(); g_micOK = M5.Mic.begin(); }
+}
+
 // 任务完成提示音:与麦克风共享 ES8311 编解码器 —— 先停麦,响一段双音 chime,再恢复麦。
 // 仅在非语音态(麦空闲)调用;g_volume=0 静音。Claude 高八度,Codex 低八度。
 static void playChime(bool claude) {
@@ -701,6 +707,7 @@ void loop() {
     if (g_inSettings) {
       settingsButtons();                                   // BtnA = down, BtnB = confirm
     } else if (!g_voice && M5.BtnB.wasPressed() && !M5.BtnA.isPressed()) {   // 按一下右键 → 开录(异步 toggle,免按住)
+      voiceStopMic();                                                        // 先释放上一轮残留录音的双缓冲槽(防 record() 阻塞主loop)
       g_voice = true; g_voiceT0 = now; g_micLevel = 0.12f; g_voiceSeq++;     // 新会话序号(隔离上次迟到结果)
       g_transcript[0] = 0; g_heardSpeech = false; g_silenceT0 = 0; g_noiseFloor = 0.06f;
       g_sentSamples = 0; g_recEnd = 0; g_finalReqT0 = 0; g_sttFinal = false;
