@@ -10,14 +10,15 @@
 // ---------- header (dot + name · clock · battery) ----------
 static void drawHeader(const Prov& p, const String& clock) {
   uint16_t cc = c565(p.color);
-  cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextSize(1);
+  cv.loadFont(Grotesk20);                              // 名称走 VLW(去颗粒)
   int nameW = cv.textWidth(p.name);
   int total = 8 + 8 + nameW, sx = CX - total / 2;
   cv.fillCircle(sx + 4, 54, 4, cc);
   cv.setTextColor(c565(COL_WHITE)); cv.setTextDatum(middle_left);
   cv.drawString(p.name, sx + 16, 54);
+  cv.unloadFont();
 
-  cv.setFont(&fonts::FreeMono9pt7b); cv.setTextSize(1);
+  cv.loadFont(JBMono16);                               // 时钟+电量数字走 VLW 等宽
   int clkW = cv.textWidth(clock.c_str());
   bool warn = g_batt <= 20;
   uint16_t bc = warn ? c565(COL_DANGER) : c565(0xD0D0D0);
@@ -32,6 +33,7 @@ static void drawHeader(const Prov& p, const String& clock) {
   cv.fillRect(bx + 1, by + 1, max(2, (int)((22 - 3) * (g_batt / 100.0f))), 10, bc);
   cv.setTextColor(bc);
   cv.drawString(String(g_batt).c_str(), bx + 28, ry);
+  cv.unloadFont();
 }
 
 
@@ -115,16 +117,16 @@ static void drawMeter(int y, const char* label, int used, const String& reset, u
   int filled = constrain((int)roundf(used / 100.0f * segs), 0, segs);
   bool hot = used >= 85;
   uint16_t segc = c565(hot ? COL_DANGER : color), empty = c565(0x1b1c20);
-  cv.setFont(&fonts::FreeSans9pt7b); cv.setTextSize(1);
+  cv.loadFont(JBMono16);                                // 标签走 VLW
   cv.setTextColor(c565(0x9a9ca2)); cv.setTextDatum(middle_left);
-  cv.drawString(label, labelX, y);
+  cv.drawString(label, labelX, y); cv.unloadFont();
   for (int i = 0; i < segs; i++)
     cv.fillRoundRect(barX + (int)(i * pitch), y - 5, (int)pitch - 3, 10, 2, i < filled ? segc : empty);
   char pc[8]; snprintf(pc, sizeof(pc), "%d%%", used);
-  cv.setFont(&fonts::FreeMonoBold12pt7b); cv.setTextColor(c565(COL_WHITE)); cv.setTextDatum(middle_right);
-  cv.drawString(pc, pctRightX, y);
-  cv.setFont(&fonts::FreeMono9pt7b); cv.setTextColor(c565(0x6d6f75)); cv.setTextDatum(middle_right);
-  cv.drawString(reset.c_str(), timeRightX, y);
+  cv.loadFont(JBMono20); cv.setTextColor(c565(COL_WHITE)); cv.setTextDatum(middle_right);
+  cv.drawString(pc, pctRightX, y); cv.unloadFont();     // 百分比走 VLW 大号(去颗粒)
+  cv.loadFont(JBMono16); cv.setTextColor(c565(0x6d6f75)); cv.setTextDatum(middle_right);
+  cv.drawString(reset.c_str(), timeRightX, y); cv.unloadFont();
 }
 
 // 活跃会话胶囊(N ACTIVE;点它/上滑进会话列表)
@@ -157,7 +159,7 @@ static uint32_t ctxColor(int pct) {
 static void drawSessionCount(int cy, int running, int total) {
   char rs[8]; snprintf(rs, sizeof(rs), "%d", running);
   char ts[12]; snprintf(ts, sizeof(ts), "/%d", total);
-  cv.setFont(&fonts::FreeMonoBold12pt7b); cv.setTextSize(1);
+  cv.loadFont(JBMono16);                                // 会话计数走 VLW
   const char* lbl = "session ";
   int lw = cv.textWidth(lbl), rw = cv.textWidth(rs), tw = cv.textWidth(ts);
   int x = CX - (lw + rw + tw) / 2;
@@ -165,6 +167,7 @@ static void drawSessionCount(int cy, int running, int total) {
   cv.setTextColor(c565(0x9a9ca2)); cv.drawString(lbl, x, cy);
   cv.setTextColor(c565(0x3CCB7F)); cv.drawString(rs, x + lw, cy);            // 运行中:绿色
   cv.setTextColor(c565(0x9a9ca2)); cv.drawString(ts, x + lw + rw, cy);
+  cv.unloadFont();
 }
 
 // 把某 provider 的弧(=max(sess,week))画进它的缓存环再贴到 cv;主页/列表共用,避免串味

@@ -67,9 +67,9 @@ static void renderUsagePage(int provIdx) {
   drawWaitBanner(provIdx);
   const char* mdl = (provIdx == 0) ? g_model : g_codexModel;
   if (mdl[0]) {
-    cv.setFont(&fonts::FreeSans9pt7b); cv.setTextSize(1);
+    cv.loadFont(JBMono16);                              // 模型名走 VLW
     cv.setTextDatum(middle_center); cv.setTextColor(c565(0x8a8d94));
-    cv.drawString(mdl, CX, 226);
+    cv.drawString(mdl, CX, 226); cv.unloadFont();
   }
   long nowE = time(nullptr); bool epochOK = epochSane(nowE);
   String sR = (epochOK && p.sessReset > nowE) ? fmtDur(p.sessReset - nowE) : String("");
@@ -187,8 +187,8 @@ static void drawStatTile(int cx, int cy, int w, int h, const char* label, const 
   cv.drawRoundRect(cx - w / 2, cy - h / 2, w, h, 7, c565(shade(color, -0.42f)));
   cv.setFont(&fonts::Font0); cv.setTextDatum(middle_center);
   cv.setTextColor(c565(0x8a9097)); cv.drawString(label, cx, cy - h / 2 + 11);
-  cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextColor(c565(COL_WHITE));
-  cv.drawString(value, cx, cy + 5);
+  cv.loadFont(JBMono20); cv.setTextColor(c565(COL_WHITE));   // 数值走 VLW(去颗粒)
+  cv.drawString(value, cx, cy + 5); cv.unloadFont();
 }
 
 // 会话详情:三宫格数据风(name·PROVIDER / model·时长 / 小吉祥物+状态 / ctx·turn·tok 三宫格 / 任务 / git·sub / 位置)
@@ -204,10 +204,10 @@ static void renderDetailPage() {
 
   // 头部:provider 色点 + 会话名称(只显示名称,不再带 · CLAUDE)
   char nm[40]; truncCp(s.name, 18, nm, sizeof(nm));
-  cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextSize(1); cv.setTextDatum(middle_center);
+  cv.loadFont(Grotesk20); cv.setTextDatum(middle_center);   // 会话名走 VLW
   int tWid = cv.textWidth(nm);
   cv.fillCircle(CX - tWid / 2 - 11, 44, 4, c565(color));
-  cv.setTextColor(c565(0xcfd2d8)); cv.drawString(nm, CX, 44);
+  cv.setTextColor(c565(0xcfd2d8)); cv.drawString(nm, CX, 44); cv.unloadFont();
 
   // 第二行:model · 已运行时长(efontCN 字体能渲染 ·,不再是方框)。MODEL 列关 → 只显时长。
   long nowE = time(nullptr); bool epochOK = epochSane(nowE);
@@ -225,11 +225,11 @@ static void renderDetailPage() {
   float t = (millis() - bootMs) / 1000.0f;
   const char* mood = moodForStatus(s.status);
   drawMascot(detailProv, CX, 118, color, mood, t, 0.62f);
-  cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextDatum(middle_center);
+  cv.loadFont(Grotesk20); cv.setTextDatum(middle_center);   // 状态词走 VLW
   uint16_t sw = c565(st == ST_EXECUTING ? shade(color, 0.25f)
                    : st == ST_THINKING ? 0xffd479
                    : st == ST_WAITING ? 0xffa94d : 0x8b9097);
-  cv.setTextColor(sw); cv.drawString(statusWord(st), CX, 180);
+  cv.setTextColor(sw); cv.drawString(statusWord(st), CX, 180); cv.unloadFont();
 
   // 数据宫格:保持原「三宫格」CTX / TURN / TOKENS,各自由对应列开关控制(关掉则隐去该块,启用块均分居中)。
   // memory 列只作用于列表表格,不在详情页加块 —— 保留刻意的三宫格默认外观不变。
@@ -304,7 +304,7 @@ static void renderDetailPage() {
   // 底部:位置点 + i/N
   int nd = p.nsess > 9 ? 9 : p.nsess;
   char pos[12]; snprintf(pos, sizeof(pos), "%d/%d", detailIdx + 1, p.nsess);
-  cv.setFont(&fonts::FreeSans9pt7b); int posW = cv.textWidth(pos);
+  cv.loadFont(JBMono16); int posW = cv.textWidth(pos);     // 位置 i/N 走 VLW
   const int dotW = 7, dgap = 6;
   int dotsW = nd * dotW + (nd - 1) * dgap;
   int x0 = CX - (dotsW + 12 + posW) / 2;
@@ -313,5 +313,5 @@ static void renderDetailPage() {
     cv.fillSmoothCircle(x0 + i * (dotW + dgap) + dotW / 2, 410, cur ? 3 : 2, c565(cur ? color : 0x44474e));
   }
   cv.setTextDatum(middle_left); cv.setTextColor(c565(0x6f757d));
-  cv.drawString(pos, x0 + dotsW + 12, 410);
+  cv.drawString(pos, x0 + dotsW + 12, 410); cv.unloadFont();
 }
