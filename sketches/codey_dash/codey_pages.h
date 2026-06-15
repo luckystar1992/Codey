@@ -10,12 +10,27 @@
 #include "codey_widgets.h"
 
 // ---------- compose one page ----------
-static void render() {
+static void renderPage() {                   // 画当前层(主页/列表/详情)到 cv
   ensureProvVisible();                       // 当前页落在被禁用 provider 上 → 吸附到启用页
   if (detailProv >= 0)      renderDetailPage();
   else if (g_listView)      renderListPage(page);
   else                      renderUsagePage(page);
-  if (g_voice) drawVoiceOverlay();           // 语音:就地半透明叠在当前 session 页之上(不再独占整屏)
+}
+
+static void render() {
+  if (g_voice) {                             // 语音:缓存「暗化底页」,每帧只 blit + 叠层(不重渲整页)→ 按键不被拖慢
+    if (g_voiceBgOk && !g_voiceBgDirty) {
+      g_voiceBg.pushSprite(&cv, 0, 0);       // 复用缓存(廉价)
+    } else {
+      renderPage();
+      cv.fillRectAlpha(0, 0, SIZE, SIZE, 188, c565(0x05070a));   // 半透明压暗
+      if (g_voiceBgOk) { cv.pushSprite(&g_voiceBg, 0, 0); g_voiceBgDirty = false; }   // 入缓存
+    }
+    drawVoiceOverlay();                       // 叠层元素(听写环/转写/状态)
+    cv.pushSprite(0, 0);
+    return;
+  }
+  renderPage();
   cv.pushSprite(0, 0);
 }
 

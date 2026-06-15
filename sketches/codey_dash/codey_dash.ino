@@ -56,6 +56,9 @@ static DispCfg g_disp = dispDefault();
 static M5Canvas cv(&M5.Display);
 static M5Canvas g_ringA(&M5.Display), g_ringB(&M5.Display);   // 仪表盘/列表各缓存一张 AA 环;每页 render 用函数内 static 记 pct 缓存键
 static bool     g_ringAok = false, g_ringBok = false;
+static M5Canvas g_voiceBg(&M5.Display);                       // 语音时缓存「暗化的 session 底页」,每帧只 blit+叠层(不重渲整页)→ 按键响应快
+static bool     g_voiceBgOk = false;                          // sprite 是否分配成功(失败则退化为每帧重渲)
+static bool     g_voiceBgDirty = true;                        // 需重建底图缓存(语音开始时置位)
 static int      page = 0;
 static uint32_t bootMs = 0;
 static uint32_t lastSecMs = 0;
@@ -71,7 +74,7 @@ static int      g_vphase = 0;        // 0 off, 1 listening/streaming, 2 finalizi
 static volatile uint16_t g_voiceSeq = 0;   // 每次会话自增;只认当前 seq 的 stt(丢弃上次迟到结果)
 static char     g_transcript[256] = {0};   // live/final transcript (netTask 写, 主loop 读)
 static const int    REC_RATE = 16000;
-static const size_t MAX_SAMPLES = (size_t)(REC_RATE * 30);     // 30s max listen window(异步 toggle 免按住,放宽)
+static const size_t MAX_SAMPLES = (size_t)(REC_RATE * 20);     // 20s max listen window(异步 toggle;留 PSRAM 给语音底图缓存)
 static const size_t STREAM_CHUNK = 512;                        // samples per WS frame (~32ms)
 static int16_t* g_audioBuf = nullptr;// continuous mic-capture buffer (PSRAM)
 static size_t   g_sentSamples = 0;   // 主loop 已写入 StreamBuffer 的样本位置
@@ -229,9 +232,8 @@ static void drawTranscript(const String& s, int cx, int cy, int maxW) {
   else                        { cv.setFont(&fonts::efontCN_24); drawWrappedCJK(s, cx, cy, maxW, 34); }
 }
 
-// 语音叠层:就地半透明覆盖在当前 session 页之上(render() 已先画底页),不再独占整屏。
+// 语音叠层元素(环/转写/状态):画在 render() 已铺好的「暗化底页」之上,不含压暗/底页。
 static void drawVoiceOverlay() {
-  cv.fillRectAlpha(0, 0, SIZE, SIZE, 188, c565(0x05070a));    // 半透明压暗,底下 session 页隐约可见
   const uint32_t color = PROV[page].color;
   const float t = (millis() - g_voiceT0) / 1000.0f;
   const bool hasText = g_transcript[0] != 0;
@@ -433,7 +435,8 @@ void setup() {
   if (!cv.createSprite(SIZE, SIZE)) Serial.println("ERROR: canvas alloc failed");
   g_ringA.setColorDepth(16); g_ringA.setPsram(true); g_ringAok = (g_ringA.createSprite(SIZE, SIZE) != nullptr);
   g_ringB.setColorDepth(16); g_ringB.setPsram(true); g_ringBok = (g_ringB.createSprite(SIZE, SIZE) != nullptr);
-  Serial.printf("ring sprites: %d %d\n", g_ringAok, g_ringBok);
+  g_voiceBg.setColorDepth(16); g_voiceBg.setPsram(true); g_voiceBgOk = (g_voiceBg.createSprite(SIZE, SIZE) != nullptr);
+  Serial.printf("ring sprites: %d %d  voiceBg: %d\n", g_ringAok, g_ringBok, g_voiceBgOk);
 
   M5.Speaker.end();                       // free the shared codec for the mic
   g_micOK = M5.Mic.begin();
@@ -701,6 +704,7 @@ void loop() {
       g_voice = true; g_voiceT0 = now; g_micLevel = 0.12f; g_voiceSeq++;     // 新会话序号(隔离上次迟到结果)
       g_transcript[0] = 0; g_heardSpeech = false; g_silenceT0 = 0; g_noiseFloor = 0.06f;
       g_sentSamples = 0; g_recEnd = 0; g_finalReqT0 = 0; g_sttFinal = false;
+      g_voiceBgDirty = true;                               // 重建语音底图缓存(当前 session 页)
       // 目标会话:详情页发起 → 取当前会话 id(流式同步进它的 Mac 终端输入);否则空(回退:停录粘贴到前台)
       if (detailProv >= 0 && detailIdx >= 0 && detailIdx < PROV[detailProv].nsess)
         { strncpy(g_voiceSid, PROV[detailProv].sess[detailIdx].id, sizeof(g_voiceSid) - 1); g_voiceSid[sizeof(g_voiceSid) - 1] = 0; }
@@ -716,13 +720,17 @@ void loop() {
         strncpy(g_transcript, !g_micOK ? "麦克风不可用" : !g_wsConn ? "语音服务未连接" : "缓冲不可用", sizeof(g_transcript) - 1);
         g_transcript[sizeof(g_transcript) - 1] = 0;
       }
-    } else if (g_voice && g_vphase == 1 && M5.BtnB.wasPressed()) {           // 再按右键 → 停录识别(异步 toggle:免按住)
-      if (now - g_voiceT0 > 250) { g_recEnd = capturedSamples(); g_vphase = 2; g_finalReqT0 = 0; }  // 停录识别(<250ms 视为起录抖动,忽略)
-    } else if (g_voice && (g_vphase == 1 || g_vphase == 2) && M5.BtnA.wasPressed()) {  // 录音/等待中 BtnA → 真取消(不识别/不粘贴)
-      if (g_voiceSid[0]) g_netListenReq = 3;             // 已流式同步进输入框 → 让 companion 清掉
+    } else if (g_voice && M5.BtnA.wasPressed()) {                            // 左键:任意阶段立即退出(全程可打断)
+      if (g_vphase != 3 && g_voiceSid[0]) g_netListenReq = 3;   // 录音/识别中取消 → 清已同步进输入框的残留;结果态只关
       g_voice = false; g_vphase = 0; g_voiceSeq++;
-      Serial.println("[voice] canceled");
-    } else if (g_voice && g_vphase == 3 && M5.BtnB.wasPressed()) {           // 结果态 → BtnB 关掉
+      Serial.println("[voice] aborted (BtnA)");
+    } else if (g_voice && g_vphase == 1 && M5.BtnB.wasPressed()) {           // 录音中:右键 → 停录识别
+      if (now - g_voiceT0 > 250) { g_recEnd = capturedSamples(); g_vphase = 2; g_finalReqT0 = 0; }  // <250ms 视为起录抖动,忽略
+    } else if (g_voice && g_vphase == 2 && M5.BtnB.wasPressed()) {           // 识别中:右键 → 放弃等待立即退出(不卡 2.5s)
+      if (g_voiceSid[0]) g_netListenReq = 3;
+      g_voice = false; g_vphase = 0; g_voiceSeq++;
+      Serial.println("[voice] give up finalize (BtnB)");
+    } else if (g_voice && g_vphase == 3 && M5.BtnB.wasPressed()) {           // 结果/错误:右键 → 关掉(保留定稿)
       g_voice = false; g_vphase = 0;
     } else if (!g_voice && !M5.BtnB.isPressed()) {                           // 左键:短按逐级返回,长按设置
       static uint32_t aDownAt = 0; static bool aLong = false;
@@ -804,6 +812,6 @@ void loop() {
   // 触摸采样与重绘解耦:循环高速跑(每几 ms 采一次触摸,接住快速双击的抬手间隙),
   // 重绘限到 ~30fps;语音叠层仍每帧重绘以保持粒子顺滑。
   static uint32_t lastRender = 0;
-  if (g_voice || g_forceRender || now - lastRender >= 33) { render(); lastRender = now; g_forceRender = false; }
+  if (g_forceRender || now - lastRender >= 33) { render(); lastRender = now; g_forceRender = false; }   // 语音底图已缓存,无需强制每帧重渲;~30fps + 快循环查按键
   delay(g_voice ? 2 : 5);
 }
