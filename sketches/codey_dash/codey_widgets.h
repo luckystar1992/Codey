@@ -112,14 +112,16 @@ static const char* moodForStatus(uint8_t status) {
 
 // USAGE/WEEKLY 分段表(还原旧版)
 static void drawMeter(int y, const char* label, int used, const String& reset, uint32_t color) {
-  const int segs = 10; const int labelX = 56; const float pitch = 12.0f;
-  const int barX = 120; const int pctRightX = 306; const int timeRightX = 378;
+  // 进度条居中:10 段 ×pitch12 → 宽 117,barX=175 使 bars(175..292)居中于 CX(233)。
+  // 各元素固定 x(label 右对齐贴条左 / pct·reset 右对齐贴条右),usage 与 weekly 两行互相对齐。
+  const int segs = 10; const int labelRightX = 166; const float pitch = 12.0f;
+  const int barX = 175; const int pctRightX = 350; const int timeRightX = 414;
   int filled = constrain((int)roundf(used / 100.0f * segs), 0, segs);
   bool hot = used >= 85;
   uint16_t segc = c565(hot ? COL_DANGER : color), empty = c565(0x1b1c20);
-  cv.loadFont(JBMono16);                                // 标签走 VLW
-  cv.setTextColor(c565(0x9a9ca2)); cv.setTextDatum(middle_left);
-  cv.drawString(label, labelX, y); cv.unloadFont();
+  cv.loadFont(JBMono16);                                // 标签走 VLW(右对齐紧贴进度条左侧)
+  cv.setTextColor(c565(0x9a9ca2)); cv.setTextDatum(middle_right);
+  cv.drawString(label, labelRightX, y); cv.unloadFont();
   for (int i = 0; i < segs; i++)
     cv.fillRoundRect(barX + (int)(i * pitch), y - 5, (int)pitch - 3, 10, 2, i < filled ? segc : empty);
   char pc[8]; snprintf(pc, sizeof(pc), "%d%%", used);
