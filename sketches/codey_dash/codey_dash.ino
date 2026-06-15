@@ -71,7 +71,7 @@ static int      g_vphase = 0;        // 0 off, 1 listening/streaming, 2 finalizi
 static volatile uint16_t g_voiceSeq = 0;   // 每次会话自增;只认当前 seq 的 stt(丢弃上次迟到结果)
 static char     g_transcript[256] = {0};   // live/final transcript (netTask 写, 主loop 读)
 static const int    REC_RATE = 16000;
-static const size_t MAX_SAMPLES = (size_t)(REC_RATE * 15);     // 15s max listen window
+static const size_t MAX_SAMPLES = (size_t)(REC_RATE * 30);     // 30s max listen window(异步 toggle 免按住,放宽)
 static const size_t STREAM_CHUNK = 512;                        // samples per WS frame (~32ms)
 static int16_t* g_audioBuf = nullptr;// continuous mic-capture buffer (PSRAM)
 static size_t   g_sentSamples = 0;   // 主loop 已写入 StreamBuffer 的样本位置
@@ -267,7 +267,7 @@ static void drawVoiceOverlay() {
     cv.drawString(title, sx + 20, 412); cv.unloadFont();
     if (g_vphase == 1) {                                              // push-to-talk 提示(录音中)
       cv.setFont(&fonts::efontCN_16); cv.setTextDatum(middle_center); cv.setTextColor(c565(0x9498a0));
-      cv.drawString("松开结束 · 左键取消", CX, 388);
+      cv.drawString("右键结束 · 左键取消", CX, 388);
     }
   } else {
     cv.setTextDatum(middle_center);
@@ -697,7 +697,7 @@ void loop() {
     bothSince = 0; bothFired = false;
     if (g_inSettings) {
       settingsButtons();                                   // BtnA = down, BtnB = confirm
-    } else if (!g_voice && M5.BtnB.wasPressed() && !M5.BtnA.isPressed()) {   // BtnB 按下 → push-to-talk 开录
+    } else if (!g_voice && M5.BtnB.wasPressed() && !M5.BtnA.isPressed()) {   // 按一下右键 → 开录(异步 toggle,免按住)
       g_voice = true; g_voiceT0 = now; g_micLevel = 0.12f; g_voiceSeq++;     // 新会话序号(隔离上次迟到结果)
       g_transcript[0] = 0; g_heardSpeech = false; g_silenceT0 = 0; g_noiseFloor = 0.06f;
       g_sentSamples = 0; g_recEnd = 0; g_finalReqT0 = 0; g_sttFinal = false;
@@ -710,15 +710,14 @@ void loop() {
         if (g_voiceSB) xStreamBufferReset(g_voiceSB);
         g_netListenReq = 1;                                // netTask -> listen:start
         M5.Mic.record(g_audioBuf, MAX_SAMPLES, REC_RATE);
-        Serial.println("[voice] streaming (hold)");
+        Serial.println("[voice] streaming (toggle)");
       } else {                                             // can't stream -> show why
         g_vphase = 3; g_resultT0 = now;
         strncpy(g_transcript, !g_micOK ? "麦克风不可用" : !g_wsConn ? "语音服务未连接" : "缓冲不可用", sizeof(g_transcript) - 1);
         g_transcript[sizeof(g_transcript) - 1] = 0;
       }
-    } else if (g_voice && g_vphase == 1 && M5.BtnB.wasReleased()) {          // 松开 → 停录识别(push-to-talk 止)
-      if (now - g_voiceT0 > 350) { g_recEnd = capturedSamples(); g_vphase = 2; g_finalReqT0 = 0; }  // 录到内容 → 识别
-      else { if (g_voiceSid[0]) g_netListenReq = 3; g_voice = false; g_vphase = 0; g_voiceSeq++; }   // 太短(误触瞬按)→ 丢弃(targeted 发 cancel 清残留)
+    } else if (g_voice && g_vphase == 1 && M5.BtnB.wasPressed()) {           // 再按右键 → 停录识别(异步 toggle:免按住)
+      if (now - g_voiceT0 > 250) { g_recEnd = capturedSamples(); g_vphase = 2; g_finalReqT0 = 0; }  // 停录识别(<250ms 视为起录抖动,忽略)
     } else if (g_voice && (g_vphase == 1 || g_vphase == 2) && M5.BtnA.wasPressed()) {  // 录音/等待中 BtnA → 真取消(不识别/不粘贴)
       if (g_voiceSid[0]) g_netListenReq = 3;             // 已流式同步进输入框 → 让 companion 清掉
       g_voice = false; g_vphase = 0; g_voiceSeq++;
