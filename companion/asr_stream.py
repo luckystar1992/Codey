@@ -149,11 +149,15 @@ def make_backend():
     return b
 
 
-# 设备「切到此会话」:codey_companion 注入 session_id -> agent PID 的解析器。
+# 设备「切到此会话」/语音流式同步:codey_companion 注入 session_id -> agent PID / status 的解析器。
 _resolve_pid = None
+_resolve_status = None
 def set_pid_resolver(fn):
     global _resolve_pid
     _resolve_pid = fn
+def set_status_resolver(fn):
+    global _resolve_status
+    _resolve_status = fn
 
 
 async def handle(ws, make_backend=make_backend, paster=None):
@@ -165,6 +169,25 @@ async def handle(ws, make_backend=make_backend, paster=None):
     backend = None
     last_sent = None
     cur_seq = 0          # 回显 listen:start 带来的会话序号,设备据此丢弃陈旧会话的迟到结果
+    from codey import focus as _focus     # 终端 pane 流式同步
+    loop = asyncio.get_event_loop()
+    target_pane = None   # 本轮语音目标 Kaku pane(详情页发起时解析);None=回退到「停录粘贴到前台」
+    synced = ""          # 已同步进该 pane 输入框的文本(下次 diff 增量更新)
+
+    async def sync_to_pane(text):         # 流式 partial diff 同步进目标 pane 输入:退格删改动尾 + 补新尾
+        nonlocal synced
+        if target_pane is None:
+            return
+        text = text or ""
+        i = 0
+        while i < len(synced) and i < len(text) and synced[i] == text[i]:
+            i += 1
+        payload = "\x7f" * (len(synced) - i) + text[i:]
+        ok = True
+        if payload:
+            ok = await loop.run_in_executor(None, _focus.send_text_to_pane, target_pane, payload)
+        if ok:                            # 发送失败则不推进 baseline,下个 partial 重算全量增量(防永久错位)
+            synced = text
 
     async def send(text, final):
         nonlocal last_sent
@@ -173,6 +196,7 @@ async def handle(ws, make_backend=make_backend, paster=None):
             await ws.send(json.dumps({"type": "stt", "text": text, "final": final, "seq": cur_seq},
                                      ensure_ascii=False))
             last_sent = text
+            await sync_to_pane(text)      # 同步进对应会话的 Mac 终端输入
 
     async def emit(events):
         final_text = None
@@ -216,6 +240,17 @@ async def handle(ws, make_backend=make_backend, paster=None):
                     await close_backend(backend)         # 关掉上一个(防 doubao ws/reader 泄漏)
                     backend = make_backend(); await backend.start()
                     last_sent = None
+                    synced = ""
+                    sid = data.get("session") or ""
+                    target_pane = None
+                    if sid and _resolve_pid:             # 详情页发起 → 解析目标会话的 Kaku pane(流式同步进它)
+                        status = _resolve_status(sid) if _resolve_status else "waiting"
+                        if status == "waiting":          # 仅 agent 在等输入(空闲于提示符)才注入,避免打断生成/污染 TUI
+                            pid = _resolve_pid(sid)
+                            target_pane = await loop.run_in_executor(None, _focus.pane_for_pid, pid)
+                            print(f"[voice] target session={sid} pid={pid} pane={target_pane}", flush=True)
+                        else:                            # 非空闲 → 不流式注入,回退到停录粘贴到前台
+                            print(f"[voice] session={sid} status={status} 非空闲 → 不流式同步", flush=True)
                     try:                                 # 本轮会话序号,后续 stt 回显;公网客户端可能发非法值
                         cur_seq = int(data.get("seq") or 0)
                     except (TypeError, ValueError):
@@ -229,17 +264,28 @@ async def handle(ws, make_backend=make_backend, paster=None):
                         print(f"[asr] stop error: {e}", flush=True); final_text = None
                     await close_backend(backend)
                     backend = None
-                    pasted = final_text and paste_on()
-                    if pasted:
-                        try:                             # 粘贴失败(如未授辅助功能)不应断开连接
-                            paster.paste(final_text)
-                            if enter_on():
-                                paster.enter()
-                        except Exception as e:
-                            print(f"[asr] paste error: {e}", flush=True)
+                    if target_pane is not None:          # 已流式同步进目标 pane → 不再粘贴到前台
+                        await sync_to_pane(final_text or "")   # 定稿/空/异常都对账:覆盖 partial 或退格清残留
+                        pasted = False
+                    else:
+                        pasted = final_text and paste_on()
+                        if pasted:
+                            try:                         # 粘贴失败(如未授辅助功能)不应断开连接
+                                paster.paste(final_text)
+                                if enter_on():
+                                    paster.enter()
+                            except Exception as e:
+                                print(f"[asr] paste error: {e}", flush=True)
                     if final_text:
                         from codey import asr_history
                         asr_history.append(final_text, engine=_ec.select_engine(), pasted=bool(pasted))
+                    target_pane = None; synced = ""      # 重置:防 stop 后迟到缓冲 PCM 再 diff 污染已定稿输入
+                elif t == "listen" and data.get("state") == "cancel":   # 设备 BtnA 取消 → 清掉已同步进输入框的文本
+                    if target_pane is not None and synced:
+                        await loop.run_in_executor(None, _focus.send_text_to_pane,
+                                                   target_pane, "\x7f" * len(synced))
+                    await close_backend(backend); backend = None
+                    target_pane = None; synced = ""
                 elif t == "submit":
                     if paste_on():
                         try: paster.enter()

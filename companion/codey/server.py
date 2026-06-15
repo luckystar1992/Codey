@@ -184,6 +184,17 @@ class App:
                         return s.get("pid") or 0
         return 0
 
+    def status_for_session(self, sid):
+        """会话 id → status(executing/thinking/waiting/done);语音流式同步仅在 waiting(空闲于提示符)时注入。"""
+        if not sid:
+            return ""
+        with self.lock:
+            for agent in ("claude", "codex"):
+                for s in self.session_cache.get(agent, []):
+                    if s.get("id") == sid:
+                        return s.get("status") or ""
+        return ""
+
 
 def make_handler(app):
     class Handler(BaseHTTPRequestHandler):

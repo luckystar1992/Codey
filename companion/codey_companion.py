@@ -34,6 +34,7 @@ def main():
     app = App()
     app.start_background()
     asr_stream.set_pid_resolver(app.pid_for_session)                      # 设备「切到此会话」→ session id→PID→终端 tab
+    asr_stream.set_status_resolver(app.status_for_session)                # 语音流式同步:仅 waiting(空闲)会话才注入
     threading.Thread(target=asr_stream.run_server, daemon=True).start()   # ASR WS :8788(同进程)
     print(f"Codey ASR       -> ws://{lan_ip()}:8788  (engine={envcfg.select_engine()})")
     httpd = ThreadingHTTPServer(("0.0.0.0", PORT), make_handler(app))

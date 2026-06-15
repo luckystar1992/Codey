@@ -146,6 +146,7 @@ static void netTask(void*) {
       g_ws.loop();                                  // WS 维护(connect 阻塞只在本任务,不卡渲染)
       if (g_netListenReq == 1)      { g_netListenReq = 0; wsListen(true); }
       else if (g_netListenReq == 2) { g_netListenReq = 0; wsListen(false); }
+      else if (g_netListenReq == 3) { g_netListenReq = 0; wsListenCancel(); }          // 取消:清同步进输入框的文本
       if (g_netFocusReq)            { g_netFocusReq = false; wsFocus(g_focusSid); }   // 切 macOS 终端 tab
       uint8_t buf[1024]; size_t n;                  // 转发主loop采集的语音 PCM
       while (g_wsConn && (n = xStreamBufferReceive(g_voiceSB, buf, sizeof(buf), 0)) > 0) g_ws.sendBIN(buf, n);

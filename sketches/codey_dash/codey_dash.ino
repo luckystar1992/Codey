@@ -100,6 +100,7 @@ static char     g_codexModel[48] = {0};  // Codex 最常用模型名(头像下)
 static volatile int  g_netListenReq = 0;     // 1=start 2=stop (主loop -> netTask)
 static volatile bool g_netFocusReq = false;  // true=发 focus(详情页点屏切到此会话;主loop -> netTask)
 static char          g_focusSid[40] = {0};   // 要切到的会话 id(主loop 写,netTask 读)
+static char          g_voiceSid[40] = {0};   // 本轮语音的目标会话 id(详情页发起则非空;流式同步到它的 Mac 输入)
 static volatile bool g_netReconnect = false; // reconfigWiFi 后让 netTask 重连
 static volatile bool g_netPause = false;     // 门户运行时暂停 netTask 的 WiFi 操作(避免双核争用 WiFi 栈)
 static StreamBufferHandle_t g_voiceSB = nullptr;  // 语音 PCM (主loop -> netTask)
@@ -137,13 +138,20 @@ static int      g_fetchFails = 0;    // consecutive fetch failures -> re-resolve
 static void wsListen(bool start) {            // listen-control messages (xiaozhi-style)
   if (!g_wsConn) return;
   if (start) {
-    char m[112];
-    snprintf(m, sizeof(m), "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"manual\",\"seq\":%u}",
-             (unsigned)g_voiceSeq);                  // 带本轮会话序号,companion 回显到 stt
+    char m[160];
+    snprintf(m, sizeof(m),                          // 带会话序号 + 目标会话 id(流式同步到该会话的 Mac 输入)
+             "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"manual\",\"seq\":%u,\"session\":\"%.48s\"}",
+             (unsigned)g_voiceSeq, g_voiceSid);
     g_ws.sendTXT(m);
   } else {
     g_ws.sendTXT("{\"type\":\"listen\",\"state\":\"stop\"}");
   }
+}
+
+// 取消:让 companion 清掉已流式同步进目标会话输入框的文本
+static void wsListenCancel() {
+  if (!g_wsConn) return;
+  g_ws.sendTXT("{\"type\":\"listen\",\"state\":\"cancel\"}");
 }
 
 // 详情页点屏「切到此会话」:把会话 id 发给 companion,由其切 macOS 终端 tab。
@@ -212,50 +220,58 @@ static void drawWrappedCJK(const String& s, int cx, int cy, int maxW, int lineH)
   for (int k = 0; k < nl; k++) { cv.drawString(lines[k].c_str(), cx, y); y += lineH; }
 }
 
+// 纯 ASCII 串(无 >=0x80 字节)→ 可用 VLW 抗锯齿渲染;含 CJK → 用 efont 位图(CJK 无 VLW)。
+static bool isPureAscii(const char* s) { for (; *s; ++s) if ((unsigned char)*s >= 0x80) return false; return true; }
+
+// 转写文本:纯 Latin/数字走 VLW(Grotesk,抗锯齿),含中文走 efont。drawWrappedCJK 按当前字体测宽换行。
+static void drawTranscript(const String& s, int cx, int cy, int maxW) {
+  if (isPureAscii(s.c_str())) { cv.loadFont(Grotesk20); drawWrappedCJK(s, cx, cy, maxW, 28); cv.unloadFont(); }
+  else                        { cv.setFont(&fonts::efontCN_24); drawWrappedCJK(s, cx, cy, maxW, 34); }
+}
+
+// 语音叠层:就地半透明覆盖在当前 session 页之上(render() 已先画底页),不再独占整屏。
 static void drawVoiceOverlay() {
-  cv.fillSprite(c565(0x060608));                              // dark takeover
+  cv.fillRectAlpha(0, 0, SIZE, SIZE, 188, c565(0x05070a));    // 半透明压暗,底下 session 页隐约可见
   const uint32_t color = PROV[page].color;
   const float t = (millis() - g_voiceT0) / 1000.0f;
   const bool hasText = g_transcript[0] != 0;
   const bool result  = (g_vphase == 3);
   const float amp = (g_vphase == 1) ? constrain(g_micLevel, 0.06f, 1.0f) : 0.16f;
 
-  // 1) streaming transcript at the TOP — partial -> final, like meme's inline label
+  // 1) 就地「正在听」动画:听写环 + 中心脉冲点(随麦克风电平呼吸)
+  const int ry = hasText ? 300 : CY + 8;
+  if (g_vphase == 1 || g_vphase == 2)
+    drawListenRings(CX, ry, (int)(64 * (1.0f + amp * 0.2f)), color, amp, t);
+  cv.fillSmoothCircle(CX, ry, (int)(13 + amp * 11), c565(shade(color, result ? 0.2f : -0.05f)));
+  cv.fillSmoothCircle(CX, ry, (int)(13 + amp * 11) - 4, c565(shade(color, -0.55f)));
+
+  // 2) 流式转写(顶部):Latin VLW 抗锯齿 / CJK efont;warm 实时 → white 定稿
   if (hasText) {
-    cv.setFont(&fonts::efontCN_24); cv.setTextSize(1);
-    cv.setTextColor(c565(result ? 0xFFFFFF : 0xFFD27A));      // warm while live, white once settled
-    drawWrappedCJK(String(g_transcript), CX, 100, 412, 34);
+    cv.setTextColor(c565(result ? 0xFFFFFF : 0xFFD27A));
+    drawTranscript(String(g_transcript), CX, 100, 412);
     cv.drawFastHLine(CX - 130, 176, 260, c565(shade(color, -0.3f)));   // divider under transcript
   }
 
-  // 2) the provider mascot in its "active" state: breathes with the mic level + listening rings
-  const int my = hasText ? 300 : CY + 6;                      // shift down when transcript present
-  const float scale = (hasText ? 0.92f : 1.12f) * (1.0f + amp * 0.16f);
-  if (g_vphase == 1 || g_vphase == 2)
-    drawListenRings(CX, my, (int)(70 * scale), color, amp, t);
-  const char* mood = result ? "happy" : "";                   // calm-attentive while listening
-  drawMascot(page, CX, my, color, mood, t, scale);
-
-  // 3) status line at the BOTTOM: ● LISTENING… / RECOGNIZING… / dismiss hint
+  // 3) 状态行(底部):● LISTENING/RECOGNIZING(VLW 抗锯齿)+ 提示
   if (!result) {
     const char* label = (g_vphase == 1) ? "LISTENING" : "RECOGNIZING";
     const uint32_t dotc = (g_vphase == 1) ? 0x3CCB7F : 0xFFC24A;   // green listening, amber finalizing
     int dots = ((int)(t * 2)) % 4;
     char title[24]; snprintf(title, sizeof(title), "%s%.*s", label, dots, "...");
     char full[24];  snprintf(full,  sizeof(full),  "%s...", label);   // fixed width -> no jiggle
-    cv.setFont(&fonts::FreeSansBold18pt7b); cv.setTextSize(1);
+    cv.loadFont(Grotesk20);
     int gw = 12 + 8 + cv.textWidth(full), sx = CX - gw / 2;           // center the ● + label group
     cv.fillSmoothCircle(sx + 6, 412, 6, c565(dotc));                  // status dot
     cv.setTextDatum(middle_left);
     cv.setTextColor(c565(shade(color, 0.25f)));
-    cv.drawString(title, sx + 20, 412);
+    cv.drawString(title, sx + 20, 412); cv.unloadFont();
     if (g_vphase == 1) {                                              // push-to-talk 提示(录音中)
-      cv.setFont(&fonts::efontCN_16); cv.setTextDatum(middle_center); cv.setTextColor(c565(0x6a6d74));
-      cv.drawString("松开提交 · 左键取消", CX, 388);
+      cv.setFont(&fonts::efontCN_16); cv.setTextDatum(middle_center); cv.setTextColor(c565(0x9498a0));
+      cv.drawString("松开结束 · 左键取消", CX, 388);
     }
   } else {
     cv.setTextDatum(middle_center);
-    cv.setFont(&fonts::efontCN_16); cv.setTextColor(c565(0x6a6d74));
+    cv.setFont(&fonts::efontCN_16); cv.setTextColor(c565(0x9498a0));
     cv.drawString("按右键关闭", CX, 420);
   }
 }
@@ -675,7 +691,7 @@ void loop() {
     if (bothSince == 0) bothSince = now;
     if (!bothFired && now - bothSince > 400) {
       bothFired = true; g_setSel = 0; g_inSettings = !g_inSettings;
-      if (g_inSettings) { g_voice = false; g_vphase = 0; g_voiceSeq++; } else bootMs = millis();  // 进设置=放弃语音,推进 seq 丢弃迟到结果
+      if (g_inSettings) { if (g_voiceSid[0]) g_netListenReq = 3; g_voice = false; g_vphase = 0; g_voiceSeq++; } else bootMs = millis();  // 进设置=放弃语音(targeted 则发 cancel 清残留),推进 seq
     }
   } else {
     bothSince = 0; bothFired = false;
@@ -685,6 +701,10 @@ void loop() {
       g_voice = true; g_voiceT0 = now; g_micLevel = 0.12f; g_voiceSeq++;     // 新会话序号(隔离上次迟到结果)
       g_transcript[0] = 0; g_heardSpeech = false; g_silenceT0 = 0; g_noiseFloor = 0.06f;
       g_sentSamples = 0; g_recEnd = 0; g_finalReqT0 = 0; g_sttFinal = false;
+      // 目标会话:详情页发起 → 取当前会话 id(流式同步进它的 Mac 终端输入);否则空(回退:停录粘贴到前台)
+      if (detailProv >= 0 && detailIdx >= 0 && detailIdx < PROV[detailProv].nsess)
+        { strncpy(g_voiceSid, PROV[detailProv].sess[detailIdx].id, sizeof(g_voiceSid) - 1); g_voiceSid[sizeof(g_voiceSid) - 1] = 0; }
+      else g_voiceSid[0] = 0;
       if (g_micOK && g_audioBuf && g_wsConn) {
         g_vphase = 1;
         if (g_voiceSB) xStreamBufferReset(g_voiceSB);
@@ -698,8 +718,9 @@ void loop() {
       }
     } else if (g_voice && g_vphase == 1 && M5.BtnB.wasReleased()) {          // 松开 → 停录识别(push-to-talk 止)
       if (now - g_voiceT0 > 350) { g_recEnd = capturedSamples(); g_vphase = 2; g_finalReqT0 = 0; }  // 录到内容 → 识别
-      else { g_voice = false; g_vphase = 0; g_voiceSeq++; }                  // 太短(误触瞬按)→ 直接丢弃
+      else { if (g_voiceSid[0]) g_netListenReq = 3; g_voice = false; g_vphase = 0; g_voiceSeq++; }   // 太短(误触瞬按)→ 丢弃(targeted 发 cancel 清残留)
     } else if (g_voice && (g_vphase == 1 || g_vphase == 2) && M5.BtnA.wasPressed()) {  // 录音/等待中 BtnA → 真取消(不识别/不粘贴)
+      if (g_voiceSid[0]) g_netListenReq = 3;             // 已流式同步进输入框 → 让 companion 清掉
       g_voice = false; g_vphase = 0; g_voiceSeq++;
       Serial.println("[voice] canceled");
     } else if (g_voice && g_vphase == 3 && M5.BtnB.wasPressed()) {           // 结果态 → BtnB 关掉

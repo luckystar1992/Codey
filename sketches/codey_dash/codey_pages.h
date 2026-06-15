@@ -11,11 +11,11 @@
 
 // ---------- compose one page ----------
 static void render() {
-  if (g_voice) { drawVoiceOverlay(); cv.pushSprite(0, 0); return; }
   ensureProvVisible();                       // 当前页落在被禁用 provider 上 → 吸附到启用页
   if (detailProv >= 0)      renderDetailPage();
   else if (g_listView)      renderListPage(page);
   else                      renderUsagePage(page);
+  if (g_voice) drawVoiceOverlay();           // 语音:就地半透明叠在当前 session 页之上(不再独占整屏)
   cv.pushSprite(0, 0);
 }
 

@@ -47,20 +47,47 @@ def _kaku_bin():
     return None
 
 
-def _kaku_focus(tty):
+def _kaku_panes():
     kaku = _kaku_bin()
     if not kaku:
-        return False
+        return None
     rc, out = _run([kaku, "cli", "list", "--format", "json"])
     if rc != 0 or not out:
-        return False
+        return None
     try:
-        panes = json.loads(out)
+        return json.loads(out)
     except Exception:
+        return None
+
+
+def pane_for_pid(pid):
+    """PID → Kaku pane_id(按控制 TTY 匹配);找不到返回 None。"""
+    tty = tty_for_pid(pid)
+    if not tty:
+        return None
+    panes = _kaku_panes()
+    if not panes:
+        return None
+    return next((p.get("pane_id") for p in panes if p.get("tty_name") == tty), None)
+
+
+def send_text_to_pane(pane_id, text):
+    """把文本/控制字符直接发给指定 pane(--no-paste,不走 bracketed paste,便于发退格等)。"""
+    kaku = _kaku_bin()
+    if kaku is None or pane_id is None or not text:
+        return False
+    rc, _ = _run([kaku, "cli", "send-text", "--no-paste", "--pane-id", str(pane_id), text])
+    return rc == 0
+
+
+def _kaku_focus(tty):
+    panes = _kaku_panes()
+    if not panes:
         return False
     pane_id = next((p.get("pane_id") for p in panes if p.get("tty_name") == tty), None)
     if pane_id is None:
         return False
+    kaku = _kaku_bin()
     rc, _ = _run([kaku, "cli", "activate-pane", "--pane-id", str(pane_id)])
     if rc != 0:
         return False
