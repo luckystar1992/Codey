@@ -6,8 +6,9 @@
 //   List   — three-line session cards: status·name·branch / model·ctx%·tok·turn / task-or-summary.
 //   Detail — big mascot + status, CTX/TURN/TOKENS tiles, token-four, ctx budget, task, git·ports.
 // Touch: tap=drill in (banner→waiting session), h-swipe=switch provider / page session in detail,
-//        swipe-up/down=descend/ascend tier. Buttons: BtnA short=back a tier / wake, long=Settings,
-//        BtnB=voice. Shake=next provider. Completion chime via companion state.chime (seq edge).
+//        swipe-up/down=descend/ascend tier (long list: page the scroll; swipe-down at top exits).
+//        Buttons: BtnA short=back a tier / wake (cancel during voice), long=Settings;
+//        BtnB hold=push-to-talk voice (release=submit). Shake=next provider. Completion chime via state.chime.
 // True-black background, full-screen PSRAM canvas for flicker-free animation; VLW AA + efont CJK.
 
 #include <M5Unified.h>
@@ -238,10 +239,14 @@ static void drawVoiceOverlay() {
     cv.setTextDatum(middle_left);
     cv.setTextColor(c565(shade(color, 0.25f)));
     cv.drawString(title, sx + 20, 412);
+    if (g_vphase == 1) {                                              // push-to-talk 提示(录音中)
+      cv.setFont(&fonts::efontCN_16); cv.setTextDatum(middle_center); cv.setTextColor(c565(0x6a6d74));
+      cv.drawString("松开提交 · 左键取消", CX, 388);
+    }
   } else {
     cv.setTextDatum(middle_center);
-    cv.setFont(&fonts::FreeSans9pt7b); cv.setTextColor(c565(0x6a6d74));
-    cv.drawString("press right to dismiss", CX, 420);
+    cv.setFont(&fonts::efontCN_16); cv.setTextColor(c565(0x6a6d74));
+    cv.drawString("按右键关闭", CX, 420);
   }
 }
 
@@ -261,6 +266,7 @@ static const int ROW_H = 64, LIST_MAX_VIS = 4;   // 三行卡片行高;同屏最
 // 列表渲染几何(渲染时写,rowHitAt 命中检测读 —— 两者一致)
 static int  g_listBandTop = 0, g_listBandH = 0, g_listOff = 0, g_listVisN = 0;
 static bool g_listAuto = false;
+static int  g_listScroll = 0, g_listMaxScroll = 0;   // 用户可控滚动偏移(px)+ 上限;替代定时自动循环
 
 // 触摸手势 → 抽象动作(action);导航只消费 action,改交互只动 handleAction()
 // 注:enum 已上移到文件顶部(Arduino 自动生成的函数原型会被提到 include 之后,需先见到此类型)
@@ -542,8 +548,7 @@ static int rowHitAt(int provIdx, int ty) {
   if (n <= 0 || g_listBandH <= 0) return -1;
   if (ty < g_listBandTop || ty > g_listBandTop + g_listBandH) return -1;
   int rel = ty - g_listBandTop;
-  if (g_listAuto) return ((g_listOff + rel) / ROW_H) % n;     // 滚动中:按当前偏移定位
-  int idx = rel / ROW_H;
+  int idx = (g_listOff + rel) / ROW_H;            // g_listOff = 可控滚动偏移(静态时为 0)
   return (idx >= 0 && idx < n) ? idx : -1;
 }
 
@@ -585,19 +590,25 @@ static TouchAction detectTouchAction(uint32_t now) {
 
 // 动作 → 导航(要改交互/重绑只改这里)
 static void handleAction(TouchAction a) {
+  const int LIST_PAGE = (LIST_MAX_VIS - 1) * ROW_H;   // 每次翻页滚动行数(留 1 行重叠做上下文)
   switch (a) {
     case ACT_SWIPE_L: case ACT_SWIPE_R: {            // 横滑:详情翻会话,否则切端
       int dir = (a == ACT_SWIPE_L) ? 1 : -1;
       if (detailProv >= 0) { int n = PROV[detailProv].nsess; if (n) detailIdx = (detailIdx + dir + n) % n; }
-      else page = nextProv(page, dir);   // 切端:跳过被 companion 禁用的 provider 页
+      else { page = nextProv(page, dir); g_listScroll = 0; }   // 切端:跳过禁用页 + 重置滚动
       break;
     }
-    case ACT_SWIPE_UP:                               // 上滑:进入下一级(主页 → 列表)
-      if (detailProv < 0 && !g_listView) g_listView = true;
+    case ACT_SWIPE_UP:                               // 上滑:主页→列表;列表内→向下翻页
+      if (detailProv >= 0) break;
+      if (!g_listView) { g_listView = true; g_listScroll = 0; }
+      else if (g_listAuto) g_listScroll = min(g_listScroll + LIST_PAGE, g_listMaxScroll);
       break;
-    case ACT_SWIPE_DOWN:                             // 下滑:返回上一级
-      if (detailProv >= 0) exitDetail();             // 详情 → 列表
-      else if (g_listView) g_listView = false;       // 列表 → 主页
+    case ACT_SWIPE_DOWN:                             // 下滑:详情→列表;列表内有偏移→上翻,到顶→回主页
+      if (detailProv >= 0) { exitDetail(); break; }  // 详情 → 列表
+      if (g_listView) {
+        if (g_listScroll > 0) g_listScroll = max(0, g_listScroll - LIST_PAGE);   // 列表向上翻页
+        else g_listView = false;                     // 已到顶 → 列表 → 主页
+      }
       break;
     case ACT_TAP:                                    // 单击:主页 → 列表;列表点行 → 详情
       if (detailProv >= 0) break;
@@ -652,30 +663,30 @@ void loop() {
     bothSince = 0; bothFired = false;
     if (g_inSettings) {
       settingsButtons();                                   // BtnA = down, BtnB = confirm
-    } else if (M5.BtnB.wasPressed() && !M5.BtnA.isPressed()) {   // right button -> voice command
-      if (!g_voice) {                                      // start streaming
-        g_voice = true; g_voiceT0 = now; g_micLevel = 0.12f; g_voiceSeq++;   // 新会话序号(隔离上次迟到结果)
-        g_transcript[0] = 0; g_heardSpeech = false; g_silenceT0 = 0; g_noiseFloor = 0.06f;
-        g_sentSamples = 0; g_recEnd = 0; g_finalReqT0 = 0; g_sttFinal = false;
-        if (g_micOK && g_audioBuf && g_wsConn) {
-          g_vphase = 1;
-          if (g_voiceSB) xStreamBufferReset(g_voiceSB);
-          g_netListenReq = 1;                              // netTask -> listen:start
-          M5.Mic.record(g_audioBuf, MAX_SAMPLES, REC_RATE);
-          Serial.println("[voice] streaming");
-        } else {                                           // can't stream -> show why
-          g_vphase = 3; g_resultT0 = now;
-          strncpy(g_transcript, !g_micOK ? "麦克风不可用" : !g_wsConn ? "语音服务未连接" : "缓冲不可用", sizeof(g_transcript) - 1);
-          g_transcript[sizeof(g_transcript) - 1] = 0;
-        }
-      } else if (g_vphase == 1) {
-        g_recEnd = capturedSamples(); g_vphase = 2;        // press again -> stop & finalize
-      } else if (g_vphase == 2) {
-        g_voice = false; g_vphase = 0; g_voiceSeq++;       // finalizing 时再按 -> 取消等待(丢弃迟到 final)
-      } else if (g_vphase == 3) {
-        g_voice = false; g_vphase = 0;                     // dismiss the result
+    } else if (!g_voice && M5.BtnB.wasPressed() && !M5.BtnA.isPressed()) {   // BtnB 按下 → push-to-talk 开录
+      g_voice = true; g_voiceT0 = now; g_micLevel = 0.12f; g_voiceSeq++;     // 新会话序号(隔离上次迟到结果)
+      g_transcript[0] = 0; g_heardSpeech = false; g_silenceT0 = 0; g_noiseFloor = 0.06f;
+      g_sentSamples = 0; g_recEnd = 0; g_finalReqT0 = 0; g_sttFinal = false;
+      if (g_micOK && g_audioBuf && g_wsConn) {
+        g_vphase = 1;
+        if (g_voiceSB) xStreamBufferReset(g_voiceSB);
+        g_netListenReq = 1;                                // netTask -> listen:start
+        M5.Mic.record(g_audioBuf, MAX_SAMPLES, REC_RATE);
+        Serial.println("[voice] streaming (hold)");
+      } else {                                             // can't stream -> show why
+        g_vphase = 3; g_resultT0 = now;
+        strncpy(g_transcript, !g_micOK ? "麦克风不可用" : !g_wsConn ? "语音服务未连接" : "缓冲不可用", sizeof(g_transcript) - 1);
+        g_transcript[sizeof(g_transcript) - 1] = 0;
       }
-    } else if (!g_voice && !M5.BtnB.isPressed()) {              // 左键:短按切页/翻会话,长按进/出详情
+    } else if (g_voice && g_vphase == 1 && M5.BtnB.wasReleased()) {          // 松开 → 停录识别(push-to-talk 止)
+      if (now - g_voiceT0 > 350) { g_recEnd = capturedSamples(); g_vphase = 2; g_finalReqT0 = 0; }  // 录到内容 → 识别
+      else { g_voice = false; g_vphase = 0; g_voiceSeq++; }                  // 太短(误触瞬按)→ 直接丢弃
+    } else if (g_voice && (g_vphase == 1 || g_vphase == 2) && M5.BtnA.wasPressed()) {  // 录音/等待中 BtnA → 真取消(不识别/不粘贴)
+      g_voice = false; g_vphase = 0; g_voiceSeq++;
+      Serial.println("[voice] canceled");
+    } else if (g_voice && g_vphase == 3 && M5.BtnB.wasPressed()) {           // 结果态 → BtnB 关掉
+      g_voice = false; g_vphase = 0;
+    } else if (!g_voice && !M5.BtnB.isPressed()) {                           // 左键:短按逐级返回,长按设置
       static uint32_t aDownAt = 0; static bool aLong = false;
       if (!M5.BtnA.isPressed() && !M5.BtnA.wasReleased()) { aDownAt = 0; aLong = false; }  // 空闲重置:防按键被 BtnB 打断后残留长按态
       if (M5.BtnA.wasPressed()) { aDownAt = now; aLong = false; }
@@ -702,9 +713,8 @@ void loop() {
         if (g_voiceSB) xStreamBufferSend(g_voiceSB, (uint8_t*)chunk, STREAM_CHUNK * 2, 0);  // -> netTask
         g_sentSamples += STREAM_CHUNK;
       }
-      bool maxed   = (cap >= MAX_SAMPLES) || (g_micOK && !M5.Mic.isRecording());
-      bool silence = g_heardSpeech && g_silenceT0 && (now - g_silenceT0 > 1300) && (now - g_voiceT0 > 1000);
-      if (maxed || silence) { g_recEnd = capturedSamples(); g_vphase = 2; g_finalReqT0 = 0; }
+      bool maxed = (cap >= MAX_SAMPLES) || (g_micOK && !M5.Mic.isRecording());   // 15s 上限/录满兜底;停录由松手触发
+      if (maxed) { g_recEnd = capturedSamples(); g_vphase = 2; g_finalReqT0 = 0; }
     } else if (g_vphase == 2) {                           // FINALIZE: flush tail, await the final stt
       while (g_sentSamples < g_recEnd) {                  // flush remaining audio (not real-time bound now)
         size_t n = g_recEnd - g_sentSamples; if (n > STREAM_CHUNK) n = STREAM_CHUNK;

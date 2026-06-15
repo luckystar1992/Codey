@@ -107,16 +107,19 @@ static void renderListPage(int provIdx) {
   int visN = p.nsess < LIST_MAX_VIS ? p.nsess : LIST_MAX_VIS;
   int bandH = visN * ROW_H;
   int bandTop = CY - bandH / 2;
-  bool autoScroll = p.nsess > LIST_MAX_VIS;
+  bool scrollable = p.nsess > LIST_MAX_VIS;
   int contentH = p.nsess * ROW_H;
-  int off = autoScroll ? (int)((millis() / 40) % (uint32_t)contentH) : 0;   // ~25px/s 上下循环滚动
-  g_listBandTop = bandTop; g_listBandH = bandH; g_listOff = off;            // 供 rowHitAt 命中检测
-  g_listVisN = visN; g_listAuto = autoScroll;
+  int maxScroll = scrollable ? (contentH - bandH) : 0;
+  if (g_listScroll < 0) g_listScroll = 0;
+  if (g_listScroll > maxScroll) g_listScroll = maxScroll;          // 钳制(数据变少时自愈)
+  int off = g_listScroll;                                          // 用户可控偏移(swipe 翻页)
+  g_listBandTop = bandTop; g_listBandH = bandH; g_listOff = off;   // 供 rowHitAt 命中检测
+  g_listVisN = visN; g_listAuto = scrollable; g_listMaxScroll = maxScroll;
 
-  // 行(居中静态;>LIST_MAX_VIS 时上下循环滚动,双份无缝拼接;裁剪到行带)
+  // 行(按 g_listScroll 偏移,裁剪到行带;用户 swipe 翻页控制,不再定时自动滚动)
   cv.setClipRect(40, bandTop, SIZE - 80, bandH);
-  for (int pass = 0; pass < (autoScroll ? 2 : 1); pass++) {
-    int base = bandTop - off + pass * contentH;
+  {
+    int base = bandTop - off;
     for (int i = 0; i < p.nsess; i++) {
       int y = base + i * ROW_H;
       if (y + ROW_H < bandTop || y > bandTop + bandH) continue;
