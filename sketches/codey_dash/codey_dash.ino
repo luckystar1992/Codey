@@ -105,6 +105,8 @@ static char          g_focusSid[40] = {0};   // 要切到的会话 id(主loop �
 static char          g_voiceSid[40] = {0};   // 本轮语音的目标会话 id(详情页发起则非空;流式同步到它的 Mac 输入)
 static volatile bool g_netReconnect = false; // reconfigWiFi 后让 netTask 重连
 static volatile bool g_netPause = false;     // 门户运行时暂停 netTask 的 WiFi 操作(避免双核争用 WiFi 栈)
+static volatile bool g_usbActive = false;     // USB 有线链路在线(netTask 写/读;在=优先 USB,不走网络)
+static volatile uint32_t g_usbLastRx = 0;     // 最近一帧时间(ms);超时判离线
 static StreamBufferHandle_t g_voiceSB = nullptr;  // 语音 PCM (主loop -> netTask)
 static bool     g_rtcSynced = false;
 // ---- 完成提示音(chime):companion 下发持久 {agent,seq};seq 增长 → 响一次 ----
@@ -320,6 +322,14 @@ static bool     g_gestureFired = false;      // 本次手势是否已触发滑�
 static bool     g_forceRender = false;       // 动作发生时强制立即重绘(切页跟手)
 
 
+#include "codey_usb.h"   // USB-CDC 有线兜底:帧编解码 + CRC16 + 收发状态机
+
+// [Task 4 临时桩] 完整实现见 Task 5(codey_net.h):此处仅满足链接,HELLO_ACK 即标在线。
+static void usbOnFrame(uint8_t type, const uint8_t* payload, uint16_t len) {
+  g_usbLastRx = millis();
+  if (type == U_HELLO_ACK) g_usbActive = true;
+}
+
 #include "codey_pages.h"   // render() + drawWaitBanner + renderUsage/List/Detail(用 .ino 全局 + 前向声明)
 
 #include "codey_portal.h"   // 开机/配网屏 + wifiAutoConnect + 自研配置门户(用 .ino 全局 + wifi_store)
@@ -426,6 +436,8 @@ void setup() {
   M5.begin(cfg);
   M5.Display.setRotation(0);
   Serial.begin(115200);
+  Serial.setTxTimeoutMs(0);                     // companion 没在读时写不阻塞 netTask(关键)
+  g_usbTxMtx = xSemaphoreCreateMutex();
   Serial.println("codey_dash booted");
 
   g_prefs.begin("codey", false);                  // persisted settings (brightness/volume/macip)
