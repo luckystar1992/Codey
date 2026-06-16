@@ -37,6 +37,9 @@ def main():
     asr_stream.set_status_resolver(app.status_for_session)                # 语音流式同步:仅 waiting(空闲)会话才注入
     threading.Thread(target=asr_stream.run_server, daemon=True).start()   # ASR WS :8788(同进程)
     print(f"Codey ASR       -> ws://{lan_ip()}:8788  (engine={envcfg.select_engine()})")
+    from codey import usb_link
+    threading.Thread(target=usb_link.run, args=(app, asr_stream.make_backend), daemon=True).start()
+    print(f"Codey USB link  -> /dev/cu.usbmodem* (有线兜底,优先)")
     httpd = ThreadingHTTPServer(("0.0.0.0", PORT), make_handler(app))
     print(f"Codey companion -> http://{lan_ip()}:{PORT}/codey/state  (port {PORT})")
     try:
