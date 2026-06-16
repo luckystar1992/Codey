@@ -1,7 +1,5 @@
 """传输无关的语音会话核:从 asr_stream.handle 抽出,WS/USB 共用。
 出站经 Channel(send_text/send_hello/send_focus_ack),入站 on_pcm/on_control。"""
-import json
-
 
 class VoiceSession:
     def __init__(self, channel, make_backend, paster, loop,
@@ -117,7 +115,7 @@ class VoiceSession:
                 await self._sync_to_pane(final_text or "")
                 pasted = False
             else:
-                pasted = final_text and self._paste_on()
+                pasted = final_text and self._paste_on() and self.paster is not None
                 if pasted:
                     try:
                         self.paster.paste(final_text)

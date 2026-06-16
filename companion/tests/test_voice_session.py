@@ -56,7 +56,7 @@ class FakeFocus:
 
 
 def make_session(channel, backend, focus, status="waiting"):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return VoiceSession(
         channel=channel,
         make_backend=lambda: backend,
@@ -128,6 +128,4 @@ async def test_stop_reconciles_final_text_to_pane():
     await s.on_control({"type": "listen", "state": "stop"})
     # FakeBackend.stop() returns "最终文本"; should diff from "部分"
     # 公共前缀 "" → delete 2 chars, append 最终文本
-    last_pane_send = fx.sent[-1]
-    assert last_pane_send[0] == 7
-    assert "\x7f" in last_pane_send[1] or "最终文本" in last_pane_send[1]
+    assert fx.sent[-1] == (7, "\x7f\x7f最终文本")
