@@ -11,6 +11,9 @@
 #include "codey_ui.h"
 #include "session_store.h"
 
+// voiceApplyStt 定义在 codey_dash.ino(#include "codey_net.h" 之前),此处仅为让 usbOnFrame 可见。
+static void voiceApplyStt(const char* text, bool final, int seq, bool hasSeq);
+
 static void copyStr(char* dst, size_t n, const char* src) { if (!src) src = ""; strncpy(dst, src, n - 1); dst[n - 1] = 0; }
 
 static void parseSession(JsonObject so, Sess& s) {
@@ -41,6 +44,66 @@ static void parseSession(JsonObject so, Sess& s) {
   for (JsonVariant pv : so["ports"].as<JsonArray>()) { if (s.nports < MAX_PORTS) s.ports[s.nports++] = pv.as<int>(); }
 }
 
+// state doc 解析落地(HTTP fetchState 与 USB U_STATE 共用):从 doc 更新所有全局显示/会话状态。
+static void applyStateDoc(JsonDocument& doc) {
+  g_stale = doc["stale"] | false;
+  const char* a = doc["asr_url"] | "";           // 远程下发的 wss:// ASR url(局域网为空)
+  strncpy(g_asrUrl, a, sizeof(g_asrUrl) - 1); g_asrUrl[sizeof(g_asrUrl) - 1] = 0;
+
+  // display 配置:列开关 + provider 开关;缺省/缺键 → true(旧 companion 行为不变)。
+  // 先在局部组装,最后一次性赋给 g_disp(单写者:netTask;主loop 只读)。
+  {
+    DispCfg d = dispDefault();
+    JsonVariantConst disp = doc["display"];
+    if (!disp.isNull()) {
+      JsonVariantConst cols = disp["columns"];
+      d.col[DC_STATUS] = cols["status"] | true;
+      d.col[DC_MODEL]  = cols["model"]  | true;
+      d.col[DC_CTX]    = cols["ctx"]    | true;
+      d.col[DC_TOKENS] = cols["tokens"] | true;
+      d.col[DC_MEMORY] = cols["memory"] | true;
+      d.col[DC_TURN]   = cols["turn"]   | true;
+      d.col[DC_SUMMARY] = cols["summary"] | true;
+      d.col[DC_BRANCH]  = cols["branch"]  | true;
+      JsonVariantConst pv = disp["providers"];
+      d.prov[0] = pv["claude"] | true;
+      d.prov[1] = pv["codex"]  | true;
+    }
+    g_disp = d;
+  }
+
+  for (JsonObject pr : doc["providers"].as<JsonArray>()) {
+    const char* id = pr["id"] | "";
+    int i = (strcmp(id, "claude") == 0) ? 0 : (strcmp(id, "codex") == 0 ? 1 : -1);
+    if (i < 0) continue;
+    PROV[i].limited   = pr["limited"] | false;
+    PROV[i].sessUsed  = pr["session"]["used_pct"] | 0;
+    PROV[i].weekUsed  = pr["weekly"]["used_pct"]  | 0;
+    PROV[i].sessReset = pr["session"]["reset_epoch"] | 0L;
+    PROV[i].weekReset = pr["weekly"]["reset_epoch"]  | 0L;
+    if (i == 0 || i == 1) { const char* m = pr["model"] | ""; char* dst = (i == 0) ? g_model : g_codexModel; if (m[0]) { strncpy(dst, m, sizeof(g_model) - 1); dst[sizeof(g_model) - 1] = 0; } }
+    PROV[i].activeCount = pr["active_count"]         | 0;
+    PROV[i].dirtyRepos  = pr["agg"]["dirty_repos"]   | 0;
+    PROV[i].tokPerMin   = pr["agg"]["tokens_per_min"]| 0L;
+    int n = 0;
+    for (JsonObject so : pr["sessions"].as<JsonArray>()) {
+      if (n >= MAX_SESS) break;
+      parseSession(so, PROV[i].sess[n]); n++;
+    }
+    PROV[i].nsess = n;
+  }
+  { JsonVariantConst ch = doc["chime"];               // 持久最新完成 {agent,seq};主loop 据 seq 增量响铃
+    if (!ch.isNull()) { g_chimeSeq = ch["seq"] | 0; g_chimeClaude = (strcmp(ch["agent"] | "", "codex") != 0); } }
+  if (detailProv >= 0 && detailIdx >= PROV[detailProv].nsess) detailProv = -1;
+  long ts = doc["ts"] | 0L;                      // Mac epoch -> set the device clock (NTP-independent)
+  if (epochSane(ts)) {
+    struct timeval tv; tv.tv_sec = (time_t)ts; tv.tv_usec = 0; settimeofday(&tv, nullptr);
+    readClock();
+  }
+  Serial.printf("[state] claude %d/%d  codex %d/%d  stale=%d\n",
+                PROV[0].sessUsed, PROV[0].weekUsed, PROV[1].sessUsed, PROV[1].weekUsed, g_stale);
+}
+
 // fetch normalized usage JSON from the Companion and update PROV with real Claude data
 static void fetchState() {
   if (WiFi.status() != WL_CONNECTED) return;
@@ -61,63 +124,8 @@ static void fetchState() {
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, http.getString());
     if (!err) {
-      g_stale = doc["stale"] | false;
-      const char* a = doc["asr_url"] | "";           // 远程下发的 wss:// ASR url(局域网为空)
-      strncpy(g_asrUrl, a, sizeof(g_asrUrl) - 1); g_asrUrl[sizeof(g_asrUrl) - 1] = 0;
-
-      // display 配置:列开关 + provider 开关;缺省/缺键 → true(旧 companion 行为不变)。
-      // 先在局部组装,最后一次性赋给 g_disp(单写者:netTask;主loop 只读)。
-      {
-        DispCfg d = dispDefault();
-        JsonVariantConst disp = doc["display"];
-        if (!disp.isNull()) {
-          JsonVariantConst cols = disp["columns"];
-          d.col[DC_STATUS] = cols["status"] | true;
-          d.col[DC_MODEL]  = cols["model"]  | true;
-          d.col[DC_CTX]    = cols["ctx"]    | true;
-          d.col[DC_TOKENS] = cols["tokens"] | true;
-          d.col[DC_MEMORY] = cols["memory"] | true;
-          d.col[DC_TURN]   = cols["turn"]   | true;
-          d.col[DC_SUMMARY] = cols["summary"] | true;
-          d.col[DC_BRANCH]  = cols["branch"]  | true;
-          JsonVariantConst pv = disp["providers"];
-          d.prov[0] = pv["claude"] | true;
-          d.prov[1] = pv["codex"]  | true;
-        }
-        g_disp = d;
-      }
-
-      for (JsonObject pr : doc["providers"].as<JsonArray>()) {
-        const char* id = pr["id"] | "";
-        int i = (strcmp(id, "claude") == 0) ? 0 : (strcmp(id, "codex") == 0 ? 1 : -1);
-        if (i < 0) continue;
-        PROV[i].limited   = pr["limited"] | false;
-        PROV[i].sessUsed  = pr["session"]["used_pct"] | 0;
-        PROV[i].weekUsed  = pr["weekly"]["used_pct"]  | 0;
-        PROV[i].sessReset = pr["session"]["reset_epoch"] | 0L;
-        PROV[i].weekReset = pr["weekly"]["reset_epoch"]  | 0L;
-        if (i == 0 || i == 1) { const char* m = pr["model"] | ""; char* dst = (i == 0) ? g_model : g_codexModel; if (m[0]) { strncpy(dst, m, sizeof(g_model) - 1); dst[sizeof(g_model) - 1] = 0; } }
-        PROV[i].activeCount = pr["active_count"]         | 0;
-        PROV[i].dirtyRepos  = pr["agg"]["dirty_repos"]   | 0;
-        PROV[i].tokPerMin   = pr["agg"]["tokens_per_min"]| 0L;
-        int n = 0;
-        for (JsonObject so : pr["sessions"].as<JsonArray>()) {
-          if (n >= MAX_SESS) break;
-          parseSession(so, PROV[i].sess[n]); n++;
-        }
-        PROV[i].nsess = n;
-      }
+      applyStateDoc(doc);
       g_haveData = true; ok = true;
-      { JsonVariantConst ch = doc["chime"];               // 持久最新完成 {agent,seq};主loop 据 seq 增量响铃
-        if (!ch.isNull()) { g_chimeSeq = ch["seq"] | 0; g_chimeClaude = (strcmp(ch["agent"] | "", "codex") != 0); } }
-      if (detailProv >= 0 && detailIdx >= PROV[detailProv].nsess) detailProv = -1;
-      long ts = doc["ts"] | 0L;                      // Mac epoch -> set the device clock (NTP-independent)
-      if (epochSane(ts)) {
-        struct timeval tv; tv.tv_sec = (time_t)ts; tv.tv_usec = 0; settimeofday(&tv, nullptr);
-        readClock();
-      }
-      Serial.printf("[fetch] ok  claude %d/%d  codex %d/%d  stale=%d\n",
-                    PROV[0].sessUsed, PROV[0].weekUsed, PROV[1].sessUsed, PROV[1].weekUsed, g_stale);
     } else {
       Serial.printf("[fetch] json err: %s\n", err.c_str());
     }
@@ -135,13 +143,57 @@ static void fetchState() {
   }
 }
 
-// 所有阻塞网络 IO 都在这里(core 0):WS 维护/连接、HTTP fetch、mDNS、语音上行。主loop 永不等待。
+// USB 入站帧落地:更新在线时戳;HELLO_ACK→标在线;STATE→复用 applyStateDoc;STT→复用 voiceApplyStt。
+static void usbOnFrame(uint8_t type, const uint8_t* payload, uint16_t len) {
+  g_usbLastRx = millis();
+  if (type == U_HELLO_ACK) { g_usbActive = true; g_companionOk = true; return; }
+  if (type == U_STATE) {
+    JsonDocument doc;
+    if (deserializeJson(doc, payload, len)) return;          // 解析失败丢弃(与 STT 同风格)
+    applyStateDoc(doc); g_haveData = true;
+  } else if (type == U_STT) {
+    JsonDocument doc;
+    if (deserializeJson(doc, payload, len)) return;
+    voiceApplyStt(doc["text"] | "", doc["final"] | false, doc["seq"] | 0, doc["seq"].is<int>());
+  }
+}
+
+// 所有阻塞网络 IO 都在这里(core 0):WS 维護/连接、HTTP fetch、mDNS、语音上行。主loop 永不等待。
+static const uint32_t USB_ACTIVE_TIMEOUT_MS = 4000;   // 连续无帧超此值 → 判 USB 离线,回落 WiFi
+static const uint32_t USB_PROBE_INTERVAL_MS = 500;    // 离线探针节流(~2/s),避免刷屏 serial / 抢 mutex
+
 static void netTask(void*) {
   bool started = false;
-  uint32_t lastFetch = 0;
+  uint32_t lastFetch = 0, lastProbe = 0;
   for (;;) {
     if (g_netPause) { started = false; vTaskDelay(20 / portTICK_PERIOD_MS); continue; }  // 门户接管 WiFi:让路(回来后重连)
-    if (g_wifi) {
+
+    usbRxPump();
+    if (g_usbActive && millis() - g_usbLastRx > USB_ACTIVE_TIMEOUT_MS) g_usbActive = false;   // 超时回落 WiFi
+    if (!g_usbActive && Serial && millis() - lastProbe >= USB_PROBE_INTERVAL_MS) {            // 仅 CDC 已连主机才节流探针
+      lastProbe = millis(); usbSendFrame(U_HELLO, (const uint8_t*)"v1", 2);                   // 找 companion(在=优先 USB)
+    }
+
+    if (g_usbActive) {
+      // —— USB 分支:不走网络 ——
+      if (g_netListenReq == 1) {
+        g_netListenReq = 0;
+        String j = listenStartJson();
+        usbSendFrame(U_LISTEN, (const uint8_t*)j.c_str(), (uint16_t)j.length());
+      } else if (g_netListenReq == 2) {
+        g_netListenReq = 0;
+        const char* s = "{\"state\":\"stop\"}";
+        usbSendFrame(U_LISTEN, (const uint8_t*)s, (uint16_t)strlen(s));
+      } else if (g_netListenReq == 3) {
+        g_netListenReq = 0;
+        const char* s = "{\"state\":\"cancel\"}";
+        usbSendFrame(U_LISTEN, (const uint8_t*)s, (uint16_t)strlen(s));
+      }
+      if (g_netFocusReq) { g_netFocusReq = false; usbSendFrame(U_FOCUS, (const uint8_t*)g_focusSid, (uint16_t)strlen(g_focusSid)); }
+      uint8_t buf[1024]; size_t n;
+      while ((n = xStreamBufferReceive(g_voiceSB, buf, sizeof(buf), 0)) > 0) usbSendFrame(U_PCM, buf, (uint16_t)n);
+    } else if (g_wifi) {
+      // —— 现有 WiFi 分支:原样 ——
       if (!started || g_netReconnect) { g_netReconnect = false; resolveMac(); wsConnect(); started = true; lastFetch = 0; }
       g_ws.loop();                                  // WS 维护(connect 阻塞只在本任务,不卡渲染)
       if (g_netListenReq == 1)      { g_netListenReq = 0; wsListen(true); }

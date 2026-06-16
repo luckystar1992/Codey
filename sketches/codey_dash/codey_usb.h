@@ -16,7 +16,10 @@ static uint16_t usbCrc16Upd(uint16_t c, const uint8_t* d, size_t n) {
   return c;
 }
 
+static const uint16_t USB_MAX_PAYLOAD = 2200;  // g_rxBuf 大小;TX/RX 对称上限
+
 static void usbSendFrame(uint8_t type, const uint8_t* p, uint16_t n) {
+  if (n > USB_MAX_PAYLOAD) return;        // TX/RX 对称:payload 不得超过接收缓冲
   uint8_t head[5] = { USB_M0, USB_M1, type, (uint8_t)(n & 0xFF), (uint8_t)(n >> 8) };
   uint16_t c = usbCrc16Upd(0xFFFF, head + 2, 3);        // crc over type+len
   c = usbCrc16Upd(c, p, n);                             //          +payload

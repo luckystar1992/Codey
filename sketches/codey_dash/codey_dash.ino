@@ -166,6 +166,22 @@ static void wsFocus(const char* sid) {
   g_ws.sendTXT(m);
 }
 
+// USB LISTEN payload:与 wsListen(start) 同字段,去掉 "type"(companion 端补)。
+static String listenStartJson() {
+  String m = "{\"state\":\"start\",\"mode\":\"manual\",\"seq\":";
+  m += (uint16_t)g_voiceSeq;
+  m += ",\"session\":\""; m += g_voiceSid; m += "\"}";   // 与 wsListen 一致:session 字段恒在(空也发)
+  return m;
+}
+
+// stt 落地(WS 与 USB 共用):seq 过滤陈旧会话 + 写 g_transcript + final 置位。
+static void voiceApplyStt(const char* text, bool final, int seq, bool hasSeq) {
+  if (hasSeq && (uint16_t)seq != g_voiceSeq) return;          // 丢弃陈旧会话的迟到 stt
+  strncpy(g_transcript, text ? text : "", sizeof(g_transcript) - 1);
+  g_transcript[sizeof(g_transcript) - 1] = '\0';
+  if (final) g_sttFinal = true;
+}
+
 static void wsEvent(WStype_t type, uint8_t* payload, size_t len) {
   if (type == WStype_CONNECTED) {
     g_wsConn = true;
@@ -178,12 +194,8 @@ static void wsEvent(WStype_t type, uint8_t* payload, size_t len) {
   } else if (type == WStype_TEXT) {
     JsonDocument doc;
     if (deserializeJson(doc, payload, len)) return;
-    if (strcmp(doc["type"] | "", "stt") == 0) {
-      if (doc["seq"].is<int>() && (uint16_t)(doc["seq"] | 0) != g_voiceSeq) return;  // 丢弃陈旧会话的迟到 stt
-      strncpy(g_transcript, (const char*)(doc["text"] | ""), sizeof(g_transcript) - 1);
-      g_transcript[sizeof(g_transcript) - 1] = '\0';            // live partial / final
-      if (doc["final"] | false) g_sttFinal = true;
-    }
+    if (strcmp(doc["type"] | "", "stt") == 0)
+      voiceApplyStt(doc["text"] | "", doc["final"] | false, doc["seq"] | 0, doc["seq"].is<int>());
   }
 }
 
@@ -324,11 +336,6 @@ static bool     g_forceRender = false;       // 动作发生时强制立即重�
 
 #include "codey_usb.h"   // USB-CDC 有线兜底:帧编解码 + CRC16 + 收发状态机
 
-// [Task 4 临时桩] 完整实现见 Task 5(codey_net.h):此处仅满足链接,HELLO_ACK 即标在线。
-static void usbOnFrame(uint8_t type, const uint8_t* payload, uint16_t len) {
-  g_usbLastRx = millis();
-  if (type == U_HELLO_ACK) g_usbActive = true;
-}
 
 #include "codey_pages.h"   // render() + drawWaitBanner + renderUsage/List/Detail(用 .ino 全局 + 前向声明)
 
@@ -464,10 +471,13 @@ void setup() {
   g_micOK = M5.Mic.begin();               // 录音用双缓冲小段 g_seg[2](静态,无需 PSRAM 大缓冲)
   Serial.printf("Mic begin=%d  IMU enabled=%d\n", g_micOK, M5.Imu.isEnabled());
 
+  // ---- 免配网 USB 启动:仅当 CDC 已连主机才握手(否则普通 WiFi 启动不空等 1.5s);在线则跳过配网门户 ----
+  if (Serial) for (int i = 0; i < 30 && !g_usbActive; i++) { usbRxPump(); usbSendFrame(U_HELLO, (const uint8_t*)"v1", 2); delay(50); }
+
   // ---- WiFi: 多网络自动连接(记忆历史) -> 都失败则自研配置门户 ----
   wifiStoreLoad(g_prefs);                          // 历史网络(SSID/密码/连接次数),按 count 降序
   g_wifi = wifiAutoConnect();                      // 扫描周边 + 按连接次数依次尝试记住的网络
-  if (!g_wifi) g_wifi = wifiConfigPortal();        // 都连不上 -> 提示用 web 配置新网络
+  if (!g_wifi && !g_usbActive) g_wifi = wifiConfigPortal();  // 都连不上且无 USB → 提示用 web 配置新网络
   if (g_wifi) {
     { String s = WiFi.SSID(); strncpy(g_ssid, s.c_str(), sizeof(g_ssid) - 1); g_ssid[sizeof(g_ssid) - 1] = 0; }
     Serial.printf("WiFi connected: %s (%s)\n", WiFi.localIP().toString().c_str(), g_ssid);
