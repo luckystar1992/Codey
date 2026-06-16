@@ -3,6 +3,8 @@
 
 MAGIC = b"\xc0\xde"
 
+MAX_PAYLOAD = 2048   # 合理上限:超出即视作损坏头,丢字节重同步(防 head-of-line 阻塞)
+
 # frame types(与固件 codey_usb.h 的枚举一一对应)
 HELLO = 0x01
 STATE_REQ = 0x10
@@ -39,7 +41,7 @@ class FrameDecoder:
     def __init__(self):
         self._buf = bytearray()
 
-    def feed(self, data: bytes):
+    def feed(self, data: bytes) -> "tuple[list[tuple[int, bytes]], bytes]":
         self._buf.extend(data)
         frames = []
         logs = bytearray()
@@ -57,6 +59,10 @@ class FrameDecoder:
             if len(self._buf) < 5:                     # 魔数(2)+type(1)+len(2) 还不够
                 break
             n = self._buf[3] | (self._buf[4] << 8)
+            if n > MAX_PAYLOAD:                        # 损坏的巨长 len:吞魔数首字节,重同步
+                logs.extend(self._buf[:1])
+                del self._buf[:1]
+                continue
             total = 5 + n + 2
             if len(self._buf) < total:                 # 半帧,等更多字节
                 break

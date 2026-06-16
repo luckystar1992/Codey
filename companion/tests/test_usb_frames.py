@@ -53,3 +53,26 @@ def test_trailing_lone_magic_first_byte_is_held_not_emitted_as_log():
     assert logs == b"hello"                          # 0xC0 暂留,不当日志吐出
     frames, logs = dec.feed(b"\xde" + uf.encode(uf.HELLO, b"")[2:])
     assert frames == [(uf.HELLO, b"")]
+
+
+def test_oversized_len_header_resyncs_to_next_good_frame():
+    bogus = uf.MAGIC + bytes([uf.STT, 0xFF, 0xFF])   # 声称 len=65535 的损坏头
+    good = uf.encode(uf.PCM, b"ok")
+    dec = uf.FrameDecoder()
+    frames, logs = dec.feed(bogus + good)
+    assert (uf.PCM, b"ok") in frames                  # 不被巨长 len 阻塞,能解出后续好帧
+    assert len(dec._buf) < 64                          # 内部缓冲不被撑大(无 head-of-line 阻塞)
+
+
+def test_multiple_frames_in_one_feed():
+    raw = uf.encode(uf.PCM, b"a") + uf.encode(uf.PCM, b"b") + uf.encode(uf.PCM, b"c")
+    frames, logs = uf.FrameDecoder().feed(raw)
+    assert frames == [(uf.PCM, b"a"), (uf.PCM, b"b"), (uf.PCM, b"c")]
+    assert logs == b""
+
+
+def test_payload_containing_magic_bytes_decodes_as_one_frame():
+    raw = uf.encode(uf.STATE, b"\xc0\xde\x01\x02")    # payload 内含魔数字节
+    frames, logs = uf.FrameDecoder().feed(raw)
+    assert frames == [(uf.STATE, b"\xc0\xde\x01\x02")]
+    assert logs == b""
