@@ -69,7 +69,6 @@ def find_port():
 def run(app, make_backend):
     """daemon 线程入口:维护串口 + 自有 asyncio loop。app 提供 state()/pid/status 解析。"""
     import serial                                     # pyserial;缺失则该兜底链路不可用
-    from codey.voice_session import VoiceSession
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -94,6 +93,7 @@ def run(app, make_backend):
 
 
 def _session_loop(ser, app, make_backend, loop):
+    from codey.voice_session import VoiceSession   # 在本函数作用域导入(run() 的局部 import 在此不可见)
     lock = threading.Lock()
     channel = UsbChannel(ser, lock)
     online = {"v": False, "last_push": 0.0}
