@@ -138,11 +138,26 @@ class SherpaBackend:
         pass        # sherpa 流随 GC 释放,无需显式关闭(接口对称)
 
 
-def make_backend():
-    """按 env 选引擎。doubao 在后续任务接入;此处先只有 sherpa。"""
+# 启动期健康探测可强制引擎(None=按配置;"sherpa"/"doubao"=强制本运行)。
+_engine_override = None
+
+
+def set_engine_override(engine):
+    """启动期豆包不可达/超时 → set_engine_override('sherpa') 让本运行全部走本地。"""
+    global _engine_override
+    _engine_override = engine
+
+
+def effective_engine():
+    """实际生效引擎:override 优先,否则按配置(envcfg.select_engine)。"""
     from codey import envcfg
-    if envcfg.select_engine() == "doubao":
-        from codey.asr_doubao import DoubaoBackend          # 后续任务提供
+    return _engine_override or envcfg.select_engine()
+
+
+def make_backend():
+    """按生效引擎建后端:doubao -> 豆包流式;否则本地 sherpa。"""
+    if effective_engine() == "doubao":
+        from codey.asr_doubao import DoubaoBackend
         return DoubaoBackend()
     b = SherpaBackend(get_recognizer())
     b.punct = _get_punctuator()

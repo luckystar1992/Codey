@@ -6,11 +6,13 @@ import base64
 import gzip
 import json
 import os
+import socket
 import struct
 import time
 import urllib.error
 import urllib.request
 import uuid
+from urllib.parse import urlparse
 
 import websockets
 
@@ -74,6 +76,28 @@ class UtteranceMerger:
 # 若用的是 seed-asr V2 服务,改 env:DOUBAO_STREAMING_RESOURCE_ID=volc.seedasr.sauc.duration。
 WS_URL      = os.environ.get("DOUBAO_STREAMING_URL", "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel")
 RESOURCE_ID = os.environ.get("DOUBAO_STREAMING_RESOURCE_ID", "volc.bigasr.sauc.duration")
+
+# 启动期健康探测阈值:网络延时(到流式 endpoint 的 TCP 连接 RTT 近似)超过它 → 回落本地 sherpa。
+DOUBAO_MAX_LATENCY_MS = float(os.environ.get("DOUBAO_MAX_LATENCY_MS", "200"))
+
+
+def health_check(timeout=1.0, attempts=2):
+    """探豆包流式 endpoint 可达性 + 网络延时(TCP 连接 RTT,无需 api_key,纯网络层)。
+    取多次尝试的最小 RTT 以削抖动。返回 (ok: bool, latency_ms: float|None, reason: str)。"""
+    host = urlparse(WS_URL).hostname or "openspeech.bytedance.com"
+    best = None
+    reason = ""
+    for _ in range(max(1, attempts)):
+        t0 = time.perf_counter()
+        try:
+            with socket.create_connection((host, 443), timeout=timeout):
+                dt = (time.perf_counter() - t0) * 1000.0
+                best = dt if best is None else min(best, dt)
+        except Exception as e:
+            reason = f"{type(e).__name__}: {e}"
+    if best is None:
+        return (False, None, reason or "unreachable")
+    return (True, best, "")
 
 
 def _cfg():

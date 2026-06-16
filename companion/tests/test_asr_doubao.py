@@ -46,3 +46,22 @@ def test_cfg_reads_from_config_then_env(tmp_path, monkeypatch):
     assert d._cfg() == {"app_id": "env-app", "api_key": "env-key"}     # 回退 env
     cfg.save({"doubao_api_key": "cfg-key", "doubao_app_id": "cfg-app"})
     assert d._cfg() == {"app_id": "cfg-app", "api_key": "cfg-key"}     # 配置台覆盖 env
+
+
+def test_health_check_unreachable(monkeypatch):
+    import socket
+    def boom(*a, **k):
+        raise OSError("nope")
+    monkeypatch.setattr(socket, "create_connection", boom)
+    ok, lat, why = d.health_check(timeout=0.01, attempts=1)
+    assert ok is False and lat is None and "nope" in why
+
+
+def test_health_check_reachable_returns_latency(monkeypatch):
+    import socket
+    class _Conn:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: _Conn())
+    ok, lat, why = d.health_check(timeout=1.0, attempts=2)
+    assert ok is True and lat is not None and lat >= 0 and why == ""

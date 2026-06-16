@@ -13,7 +13,6 @@ import threading
 from http.server import ThreadingHTTPServer
 
 import asr_stream
-from codey import envcfg
 from codey.server import App, make_handler
 
 PORT = int(os.environ.get("CODEY_PORT") or 8787)
@@ -30,13 +29,31 @@ def lan_ip():
     return "127.0.0.1"
 
 
+def maybe_fallback_engine():
+    """启动期探豆包流式服务:不可达 或 网络延时 > 阈值(默认 200ms)→ 本运行强制本地 sherpa。
+    只在配置/默认选了豆包时才探(本就本地则跳过)。"""
+    from codey import asr_doubao
+    if asr_stream.effective_engine() != "doubao":
+        return
+    ok, lat, why = asr_doubao.health_check()
+    if not ok:
+        asr_stream.set_engine_override("sherpa")
+        print(f"[asr] 豆包不可达({why})→ 回落本地 sherpa")
+    elif lat > asr_doubao.DOUBAO_MAX_LATENCY_MS:
+        asr_stream.set_engine_override("sherpa")
+        print(f"[asr] 豆包延时 {lat:.0f}ms > {asr_doubao.DOUBAO_MAX_LATENCY_MS:.0f}ms → 回落本地 sherpa")
+    else:
+        print(f"[asr] 豆包可达,延时 {lat:.0f}ms → 用豆包")
+
+
 def main():
     app = App()
     app.start_background()
     asr_stream.set_pid_resolver(app.pid_for_session)                      # 设备「切到此会话」→ session id→PID→终端 tab
     asr_stream.set_status_resolver(app.status_for_session)                # 语音流式同步:仅 waiting(空闲)会话才注入
+    maybe_fallback_engine()                                               # 豆包不可达/延时高 → 本运行回落本地 sherpa
     threading.Thread(target=asr_stream.run_server, daemon=True).start()   # ASR WS :8788(同进程)
-    print(f"Codey ASR       -> ws://{lan_ip()}:8788  (engine={envcfg.select_engine()})")
+    print(f"Codey ASR       -> ws://{lan_ip()}:8788  (engine={asr_stream.effective_engine()})")
     from codey import usb_link
     threading.Thread(target=usb_link.run, args=(app, asr_stream.make_backend), daemon=True).start()
     print(f"Codey USB link  -> /dev/cu.usbmodem* (有线兜底,优先)")
