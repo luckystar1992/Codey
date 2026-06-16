@@ -66,3 +66,11 @@ async def test_usbchannel_send_text_emits_stt_frame():
     assert frames[0][0] == uf.STT
     import json
     assert json.loads(frames[0][1]) == {"type": "stt", "text": "你好", "final": False, "seq": 4}
+
+
+@pytest.mark.asyncio
+async def test_state_req_frame_triggers_on_hello():
+    called = {"n": 0}
+    await handle_frame(uf.STATE_REQ, b"", UsbChannel(FakeSerialWriter()),
+                       FakeSession(), on_hello=lambda: called.__setitem__("n", called["n"] + 1))
+    assert called["n"] == 1

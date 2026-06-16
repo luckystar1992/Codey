@@ -14,17 +14,22 @@ STATE_PUSH_SEC = 1.0   # state 推送周期
 
 class UsbChannel:
     """VoiceSession 出站适配:把 stt/hello/focus_ack 编成帧写串口。"""
-    def __init__(self, writer):
+    def __init__(self, writer, lock=None):
         self.writer = writer
+        self._lock = lock or threading.Lock()
+
+    def _write(self, raw):
+        with self._lock:
+            self.writer.write(raw)
 
     def _send(self, ftype, obj):
-        self.writer.write(uf.encode(ftype, json.dumps(obj, ensure_ascii=False).encode("utf-8")))
+        self._write(uf.encode(ftype, json.dumps(obj, ensure_ascii=False).encode("utf-8")))
 
     async def send_text(self, text, final, seq):
         self._send(uf.STT, {"type": "stt", "text": text, "final": final, "seq": seq})
 
     async def send_hello(self):
-        self.writer.write(uf.encode(uf.HELLO_ACK, json.dumps({
+        self._write(uf.encode(uf.HELLO_ACK, json.dumps({
             "type": "hello", "transport": "usb", "session_id": "codey",
             "audio_params": {"format": "pcm", "sample_rate": 16000, "channels": 1},
         }).encode("utf-8")))
@@ -36,7 +41,7 @@ class UsbChannel:
 async def handle_frame(ftype, payload, channel, session, on_hello=None):
     """单帧路由(可单测):HELLO→ACK+标在线;PCM→on_pcm;LISTEN/FOCUS→on_control。"""
     if ftype == uf.HELLO:
-        channel.writer.write(uf.encode(uf.HELLO_ACK, b'{"type":"hello","transport":"usb"}'))
+        await channel.send_hello()          # 完整握手描述(含 audio_params),经锁写出
         if on_hello:
             on_hello()
     elif ftype == uf.STATE_REQ:
@@ -45,7 +50,11 @@ async def handle_frame(ftype, payload, channel, session, on_hello=None):
     elif ftype == uf.PCM:
         await session.on_pcm(payload)
     elif ftype == uf.LISTEN:
-        d = json.loads(payload or b"{}")
+        try:
+            d = json.loads(payload or b"{}")
+        except (json.JSONDecodeError, ValueError):
+            print("[usb] bad LISTEN payload, skipping", flush=True)
+            return
         d["type"] = "listen"
         await session.on_control(d)
     elif ftype == uf.FOCUS:
@@ -85,7 +94,8 @@ def run(app, make_backend):
 
 
 def _session_loop(ser, app, make_backend, loop):
-    channel = UsbChannel(ser)
+    lock = threading.Lock()
+    channel = UsbChannel(ser, lock)
     online = {"v": False, "last_push": 0.0}
     session = VoiceSession(channel, make_backend, None, loop,
                            resolve_pid=app.pid_for_session, resolve_status=app.status_for_session)
@@ -93,7 +103,7 @@ def _session_loop(ser, app, make_backend, loop):
 
     def mark_online():
         online["v"] = True
-        _push_state(ser, app)
+        _push_state(ser, app, lock)
         online["last_push"] = time.time()
 
     try:
@@ -104,12 +114,15 @@ def _session_loop(ser, app, make_backend, loop):
                 if logs:
                     print("[dev] " + logs.decode("utf-8", "replace"), end="", flush=True)
                 for ftype, payload in frames:
+                    # 顺序处理(.result() 阻塞读线程直到该帧处理完)— 刻意与 WS 路径一致,
+                    # 避免 PCM 与 listen:stop 并发复用同一 sherpa backend。代价:ASR 慢时读暂停,
+                    # 极端下串口 RX 溢出 → CRC/半帧 → 解码器重同步(降级不损坏)。v1 可接受。
                     fut = asyncio.run_coroutine_threadsafe(
                         handle_frame(ftype, payload, channel, session, on_hello=mark_online), loop)
                     fut.result()
             now = time.time()
             if online["v"] and now - online["last_push"] >= STATE_PUSH_SEC:
-                _push_state(ser, app)
+                _push_state(ser, app, lock)
                 online["last_push"] = now
     except Exception as e:
         print(f"[usb] link lost: {e}", flush=True)
@@ -119,8 +132,10 @@ def _session_loop(ser, app, make_backend, loop):
             pass
 
 
-def _push_state(ser, app):
+def _push_state(ser, app, lock):
     try:
-        ser.write(uf.encode(uf.STATE, json.dumps(app.state()).encode("utf-8")))
+        raw = uf.encode(uf.STATE, json.dumps(app.state()).encode("utf-8"))
+        with lock:
+            ser.write(raw)
     except Exception as e:
         print(f"[usb] state push failed: {e}", flush=True)
