@@ -160,155 +160,48 @@ def set_status_resolver(fn):
     _resolve_status = fn
 
 
+class WsChannel:
+    def __init__(self, ws):
+        self.ws = ws
+
+    async def send_text(self, text, final, seq):
+        await self.ws.send(json.dumps({"type": "stt", "text": text, "final": final, "seq": seq},
+                                      ensure_ascii=False))
+
+    async def send_hello(self):
+        await self.ws.send(json.dumps({
+            "type": "hello", "transport": "websocket", "session_id": "codey",
+            "audio_params": {"format": "pcm", "sample_rate": 16000, "channels": 1},
+        }))
+
+    async def send_focus_ack(self, ok, reason):
+        try:
+            await self.ws.send(json.dumps({"type": "focus_ack", "ok": bool(ok), "reason": reason}))
+        except Exception:
+            pass
+
+
 async def handle(ws, make_backend=make_backend, paster=None):
     if paster is None:
         paster = default_paster()
-    from codey import envcfg as _ec
-    def paste_on():  return _ec.paste_enabled() if paster.enabled is None else paster.enabled
-    def enter_on():  return _ec.auto_enter() if paster.auto_enter is None else paster.auto_enter
-    backend = None
-    last_sent = None
-    cur_seq = 0          # 回显 listen:start 带来的会话序号,设备据此丢弃陈旧会话的迟到结果
-    from codey import focus as _focus     # 终端 pane 流式同步
     loop = asyncio.get_event_loop()
-    target_pane = None   # 本轮语音目标 Kaku pane(详情页发起时解析);None=回退到「停录粘贴到前台」
-    synced = ""          # 已同步进该 pane 输入框的文本(下次 diff 增量更新)
-
-    async def sync_to_pane(text):         # 流式 partial diff 同步进目标 pane 输入:退格删改动尾 + 补新尾
-        nonlocal synced
-        if target_pane is None:
-            return
-        text = text or ""
-        i = 0
-        while i < len(synced) and i < len(text) and synced[i] == text[i]:
-            i += 1
-        payload = "\x7f" * (len(synced) - i) + text[i:]
-        ok = True
-        if payload:
-            ok = await loop.run_in_executor(None, _focus.send_text_to_pane, target_pane, payload)
-        if ok:                            # 发送失败则不推进 baseline,下个 partial 重算全量增量(防永久错位)
-            synced = text
-
-    async def send(text, final):
-        nonlocal last_sent
-        text = (text or "").strip()
-        if final or text != last_sent:
-            await ws.send(json.dumps({"type": "stt", "text": text, "final": final, "seq": cur_seq},
-                                     ensure_ascii=False))
-            last_sent = text
-            await sync_to_pane(text)      # 同步进对应会话的 Mac 终端输入
-
-    async def emit(events):
-        final_text = None
-        for ev in events:
-            await send(ev["text"], ev["final"])
-            if ev["final"] and ev["text"]:
-                final_text = ev["text"]
-        return final_text
-
-    async def close_backend(b):
-        if b is None:
-            return
-        close = getattr(b, "close", None)
-        if close:
-            try:
-                await close()
-            except Exception:
-                pass
-
+    from codey.voice_session import VoiceSession
+    session = VoiceSession(WsChannel(ws), make_backend, paster, loop,
+                           resolve_pid=_resolve_pid, resolve_status=_resolve_status)
     try:
         async for msg in ws:
             if isinstance(msg, (bytes, bytearray)):
-                if backend is None:
-                    backend = make_backend(); await backend.start()
-                try:
-                    await emit(await backend.accept(msg))
-                except Exception as e:           # 单帧解码出错不应拖垮整条连接
-                    print(f"[asr] accept error: {e}", flush=True)
+                await session.on_pcm(msg)
             else:
                 try:
                     data = json.loads(msg)
                 except Exception:
                     continue
-                t = data.get("type")
-                if t == "hello":
-                    await ws.send(json.dumps({
-                        "type": "hello", "transport": "websocket", "session_id": "codey",
-                        "audio_params": {"format": "pcm", "sample_rate": 16000, "channels": 1},
-                    }))
-                elif t == "listen" and data.get("state") == "start":
-                    await close_backend(backend)         # 关掉上一个(防 doubao ws/reader 泄漏)
-                    backend = make_backend(); await backend.start()
-                    last_sent = None
-                    synced = ""
-                    sid = data.get("session") or ""
-                    target_pane = None
-                    if sid and _resolve_pid:             # 详情页发起 → 解析目标会话的 Kaku pane(流式同步进它)
-                        status = _resolve_status(sid) if _resolve_status else "waiting"
-                        if status == "waiting":          # 仅 agent 在等输入(空闲于提示符)才注入,避免打断生成/污染 TUI
-                            pid = _resolve_pid(sid)
-                            target_pane = await loop.run_in_executor(None, _focus.pane_for_pid, pid)
-                            print(f"[voice] target session={sid} pid={pid} pane={target_pane}", flush=True)
-                        else:                            # 非空闲 → 不流式注入,回退到停录粘贴到前台
-                            print(f"[voice] session={sid} status={status} 非空闲 → 不流式同步", flush=True)
-                    try:                                 # 本轮会话序号,后续 stt 回显;公网客户端可能发非法值
-                        cur_seq = int(data.get("seq") or 0)
-                    except (TypeError, ValueError):
-                        cur_seq = 0
-                elif t == "listen" and data.get("state") == "stop":
-                    if backend is None:
-                        backend = make_backend(); await backend.start()
-                    try:
-                        final_text = await emit(await backend.stop())
-                    except Exception as e:
-                        print(f"[asr] stop error: {e}", flush=True); final_text = None
-                    await close_backend(backend)
-                    backend = None
-                    if target_pane is not None:          # 已流式同步进目标 pane → 不再粘贴到前台
-                        await sync_to_pane(final_text or "")   # 定稿/空/异常都对账:覆盖 partial 或退格清残留
-                        pasted = False
-                    else:
-                        pasted = final_text and paste_on()
-                        if pasted:
-                            try:                         # 粘贴失败(如未授辅助功能)不应断开连接
-                                paster.paste(final_text)
-                                if enter_on():
-                                    paster.enter()
-                            except Exception as e:
-                                print(f"[asr] paste error: {e}", flush=True)
-                    if final_text:
-                        from codey import asr_history
-                        asr_history.append(final_text, engine=_ec.select_engine(), pasted=bool(pasted))
-                    target_pane = None; synced = ""      # 重置:防 stop 后迟到缓冲 PCM 再 diff 污染已定稿输入
-                elif t == "listen" and data.get("state") == "cancel":   # 设备 BtnA 取消 → 清掉已同步进输入框的文本
-                    if target_pane is not None and synced:
-                        await loop.run_in_executor(None, _focus.send_text_to_pane,
-                                                   target_pane, "\x7f" * len(synced))
-                    await close_backend(backend); backend = None
-                    target_pane = None; synced = ""
-                elif t == "submit":
-                    if paste_on():
-                        try: paster.enter()
-                        except Exception: pass
-                elif t == "clear":
-                    if paste_on():
-                        try: paster.clear()
-                        except Exception: pass
-                elif t == "focus":                       # 设备详情页点屏「切到此会话」→ 切 macOS 终端 tab
-                    sid = data.get("session") or ""
-                    pid = _resolve_pid(sid) if _resolve_pid else 0
-                    from codey import focus as _focus
-                    ok, why = await asyncio.get_event_loop().run_in_executor(   # osascript 阻塞 → 丢线程池,不卡 loop
-                        None, _focus.focus_pid, pid)
-                    print(f"[focus] session={sid} pid={pid} -> {ok} ({why})", flush=True)
-                    try:
-                        await ws.send(json.dumps({"type": "focus_ack", "ok": bool(ok), "reason": why}))
-                    except Exception:
-                        pass
+                await session.on_control(data)
     except websockets.ConnectionClosed:
         pass
     finally:
-        await close_backend(backend)                     # 中途断连(无 listen:stop)也释放在用后端
+        await session.close()
 
 
 async def main():
