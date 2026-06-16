@@ -39,16 +39,17 @@ def main():
         return 1
 
     ser = serial.Serial(port, 115200, timeout=0.1)
-    print(f"[probe] {port} 打开,{secs:.0f}s 自检中…(设备 CDC 一连即应开始发 HELLO 探针)")
+    print(f"[probe] {port} 打开,{secs:.0f}s 自检中…(每收一个 HELLO 即回一个 HELLO_ACK)")
     dec = uf.FrameDecoder()
-    hello_before_ack = 0          # 回 ACK 前收到的 HELLO 数(应 ≥1)
-    hello_after_ack = 0           # 回 ACK 后收到的 HELLO 数(应 =0 → 设备已置在线)
-    acked = False
+    hello_total = 0               # 收到的 HELLO 探针总数(应 ≥1 → 固件 TX/本机解码互通)
+    acks_sent = 0
     got_state = False
     t0 = time.time()
-    ack_t = None
+    last_hello_t = None
+    quiet_after_ack = False       # ACK 发出后设备静默 >1.5s → 已置在线(吃下了 ACK)
     while time.time() - t0 < secs:
         data = ser.read(4096)
+        now = time.time()
         if data:
             frames, logs = dec.feed(data)
             if logs:
@@ -56,30 +57,30 @@ def main():
                 sys.stdout.flush()
             for ftype, payload in frames:
                 if ftype == uf.HELLO:
-                    if not acked:
-                        hello_before_ack += 1
-                        ser.write(uf.encode(uf.HELLO_ACK, b'{"type":"hello","transport":"usb"}'))
-                        acked = True
-                        ack_t = time.time()
-                        print(f"\n[probe] 收到 HELLO #{hello_before_ack} → 已回 HELLO_ACK")
-                    else:
-                        hello_after_ack += 1
+                    hello_total += 1
+                    last_hello_t = now
+                    ser.write(uf.encode(uf.HELLO_ACK, b'{"type":"hello","transport":"usb"}'))
+                    acks_sent += 1
+                    print(f"[probe] +{now-t0:4.1f}s 收到 HELLO #{hello_total} → 回 HELLO_ACK")
                 elif ftype == uf.STATE:
                     got_state = True
-                    print(f"[probe] 收到 STATE 帧 {len(payload)}B(设备侧请求触发?)")
+                    print(f"[probe] +{now-t0:4.1f}s 收到 STATE 帧 {len(payload)}B")
+                elif ftype == uf.STT:
+                    print(f"[probe] +{now-t0:4.1f}s 收到 STT 帧 {len(payload)}B: {payload[:60]!r}")
                 else:
-                    print(f"[probe] 收到帧 type=0x{ftype:02X} len={len(payload)}")
-        # ACK 后给设备 ~2s 看它是否停发 HELLO
-        if ack_t and time.time() - ack_t > 2.0:
+                    print(f"[probe] +{now-t0:4.1f}s 收到帧 type=0x{ftype:02X} len={len(payload)}")
+        # 已发过 ACK、且距上个 HELLO 静默 >1.5s → 设备已置在线、停发探针
+        if acks_sent > 0 and last_hello_t and now - last_hello_t > 1.5:
+            quiet_after_ack = True
             break
     ser.close()
 
     print("\n==== 自检结论 ====")
-    print(f"ACK 前 HELLO 数 : {hello_before_ack}  ({'OK 固件→本机解码互通' if hello_before_ack else 'FAIL 没收到任何 HELLO,检查端口/固件/有无别的程序占用'})")
-    if acked:
-        print(f"ACK 后 HELLO 数 : {hello_after_ack}  ({'OK 设备已收 ACK 并置在线(停发探针)' if hello_after_ack == 0 else 'WARN 设备仍在发 HELLO,可能没解出 ACK(检查 CRC/帧格式)'})")
-    ok = hello_before_ack > 0 and acked and hello_after_ack == 0
-    print(f"双向握手        : {'✅ 通过(真机编解码互通)' if ok else '❌ 未通过'}")
+    print(f"收到 HELLO 总数 : {hello_total}  ({'OK 固件 TX→本机解码互通(codec 真机验证)' if hello_total else 'FAIL 没收到任何 HELLO,检查端口/固件/占用'})")
+    print(f"回 HELLO_ACK 数 : {acks_sent}")
+    print(f"ACK 后设备静默  : {'是 → 设备解出 ACK 并置 g_usbActive=true(停发探针)' if quiet_after_ack else '否 → 设备仍在发 HELLO,RX 侧未吃下 ACK'}")
+    ok = hello_total > 0 and quiet_after_ack
+    print(f"双向握手        : {'✅ 通过(真机双向编解码互通)' if ok else '❌ 未通过'}")
     return 0 if ok else 2
 
 
