@@ -3,7 +3,12 @@
 
 MAGIC = b"\xc0\xde"
 
-MAX_PAYLOAD = 2048   # 合理上限:超出即视作损坏头,丢字节重同步(防 head-of-line 阻塞)
+# 解码上限:本解码器只解 设备→companion 帧(PCM ≤1024 / 小 JSON),故 2048 足够且能尽早拒掉损坏的巨长 len(防 head-of-line 阻塞)。
+# 注意:这与固件 g_rxBuf(解 companion→设备 的整份 STATE,~16KB)是两个不同方向的上限,故数值不同,刻意不强行相等。
+MAX_PAYLOAD = 2048
+
+# 固件 g_rxBuf / USB_MAX_PAYLOAD(codey_usb.h)大小:companion→设备 帧(整份 STATE)不得超过它,否则设备 RX 丢弃。两处保持同步。
+STATE_MAX = 16384
 
 # frame types(与固件 codey_usb.h 的枚举一一对应)
 HELLO = 0x01

@@ -16,7 +16,7 @@ static uint16_t usbCrc16Upd(uint16_t c, const uint8_t* d, size_t n) {
   return c;
 }
 
-static const uint16_t USB_MAX_PAYLOAD = 2200;  // g_rxBuf 大小;TX/RX 对称上限
+static const uint16_t USB_MAX_PAYLOAD = 16384;  // g_rxBuf 大小=RX 上限;须 ≥ 最大 STATE json(多会话可达 ~10KB,设计上限 12 会话/家×2)
 
 static void usbSendFrame(uint8_t type, const uint8_t* p, uint16_t n) {
   if (n > USB_MAX_PAYLOAD) return;        // TX/RX 对称:payload 不得超过接收缓冲
@@ -36,7 +36,7 @@ static uint8_t  g_rxStage = 0;            // 0=找C0 1=见C0等DE 2=收头 3=收
 static uint8_t  g_rxHdr[3];               // type, lenLo, lenHi
 static uint8_t  g_rxHdrGot = 0;
 static uint16_t g_rxLen = 0, g_rxGot = 0;
-static uint8_t  g_rxBuf[2200];            // payload 上限(STATE json ~1-2KB)
+static uint8_t  g_rxBuf[USB_MAX_PAYLOAD];  // 接收 payload 缓冲(最大帧 = 整份 STATE json)
 static uint8_t  g_rxCrc[2]; static uint8_t g_rxCrcGot = 0;
 
 static void usbRxByte(uint8_t b) {

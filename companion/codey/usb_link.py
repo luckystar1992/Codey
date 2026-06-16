@@ -119,7 +119,7 @@ def _session_loop(ser, app, make_backend, loop):
                     # 极端下串口 RX 溢出 → CRC/半帧 → 解码器重同步(降级不损坏)。v1 可接受。
                     fut = asyncio.run_coroutine_threadsafe(
                         handle_frame(ftype, payload, channel, session, on_hello=mark_online), loop)
-                    fut.result()
+                    fut.result(timeout=15)        # 单帧处理卡死(ASR/executor 挂)→ 超时抛错 → 关口重连,不永久卡死读线程
             now = time.time()
             if online["v"] and now - online["last_push"] >= STATE_PUSH_SEC:
                 _push_state(ser, app, lock)
@@ -134,7 +134,10 @@ def _session_loop(ser, app, make_backend, loop):
 
 def _push_state(ser, app, lock):
     try:
-        raw = uf.encode(uf.STATE, json.dumps(app.state()).encode("utf-8"))
+        payload = json.dumps(app.state()).encode("utf-8")
+        if len(payload) > uf.STATE_MAX:           # 超固件 RX 缓冲 → 设备会丢弃此帧(会话过多);打日志,不静默
+            print(f"[usb] STATE payload {len(payload)}B > {uf.STATE_MAX}B,设备将丢弃此帧(活动会话过多)", flush=True)
+        raw = uf.encode(uf.STATE, payload)
         with lock:
             ser.write(raw)
     except Exception as e:
