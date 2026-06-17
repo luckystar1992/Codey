@@ -107,6 +107,7 @@ static volatile bool g_netReconnect = false; // reconfigWiFi 后让 netTask 重�
 static volatile bool g_netPause = false;     // 门户运行时暂停 netTask 的 WiFi 操作(避免双核争用 WiFi 栈)
 static volatile bool g_usbActive = false;     // USB 有线链路在线(netTask 写/读;在=优先 USB,不走网络)
 static volatile uint32_t g_usbLastRx = 0;     // 最近一帧时间(ms);超时判离线
+static volatile bool g_bootReady = false;     // setup 跑完置真;之前 USB 只认 HELLO_ACK,不处理 STATE/STT(避免早启核1崩→黑屏)
 static StreamBufferHandle_t g_voiceSB = nullptr;  // 语音 PCM (主loop -> netTask)
 static bool     g_rtcSynced = false;
 // ---- 完成提示音(chime):companion 下发持久 {agent,seq};seq 增长 → 响一次 ----
@@ -499,6 +500,7 @@ void setup() {
   lastActiveMs = millis();
   aBlinkNext = millis() + 1500;
   render();
+  g_bootReady = true;                  // 主循环就绪 → USB 才开始处理 STATE/STT(此前只认 HELLO_ACK)
 }
 
 #include "codey_net.h"   // copyStr/parseSession/fetchState/netTask(用 .ino 全局 + readClock/resolveMac/wsConnect/wsListen/maybeRepointWs)

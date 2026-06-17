@@ -147,6 +147,7 @@ static void fetchState() {
 static void usbOnFrame(uint8_t type, const uint8_t* payload, uint16_t len) {
   g_usbLastRx = millis();
   if (type == U_HELLO_ACK) { g_usbActive = true; g_companionOk = true; return; }
+  if (!g_bootReady) return;        // 启动握手窗口内只认 HELLO_ACK;STATE/STT 等主循环就绪再处理(防早启核1崩→黑屏)
   if (type == U_STATE) {
     JsonDocument doc;
     if (deserializeJson(doc, payload, len)) return;          // 解析失败丢弃(与 STT 同风格)
