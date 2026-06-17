@@ -43,28 +43,51 @@ def load_dotenv(path=None):
     return data
 
 
-def _tencent_keys(get):
+def _has_tencent(get):
     return bool((get("tencent_appid") or "").strip()
                 and (get("tencent_secret_id") or "").strip()
                 and (get("tencent_secret_key") or "").strip())
 
 
-def select_engine(env=None):
-    # env=None:走 config(asr_engine + 各家 key);显式 env:按 env 算(兼容老调用)。
-    # auto 优先级:tencent(三件套齐) > doubao(key) > sherpa(本地)。
-    if env is None:
-        eng = (config.get("asr_engine") or "auto").strip().lower()
-        if eng in ("sherpa", "doubao", "tencent"):
-            return eng
-        if _tencent_keys(config.get):
-            return "tencent"
-        return "doubao" if (config.get("doubao_api_key") or "").strip() else "sherpa"
-    eng = (env.get("CODEY_ASR_ENGINE") or "auto").strip().lower()
-    if eng in ("sherpa", "doubao", "tencent"):
-        return eng
-    if env.get("TENCENT_APPID", "").strip() and env.get("TENCENT_SECRET_ID", "").strip() and env.get("TENCENT_SECRET_KEY", "").strip():
+def _has_doubao(get):
+    return bool((get("doubao_api_key") or "").strip())
+
+
+def _resolve_engine(explicit, has_tencent, has_doubao):
+    """只用「配置存在」的引擎。显式 sherpa 永远本地;显式 tencent/doubao 须其配置在才生效,
+    否则与 auto 一样按存在情况优先 tencent > doubao > sherpa(本地)。"""
+    if explicit == "sherpa":
+        return "sherpa"
+    if explicit == "tencent" and has_tencent:
         return "tencent"
-    return "doubao" if (env.get("DOUBAO_API_KEY") or "").strip() else "sherpa"
+    if explicit == "doubao" and has_doubao:
+        return "doubao"
+    if has_tencent:
+        return "tencent"
+    if has_doubao:
+        return "doubao"
+    return "sherpa"
+
+
+# 显式 env dict 路径:config 键 → env 变量名
+_ENGINE_ENV = {
+    "tencent_appid": "TENCENT_APPID", "tencent_secret_id": "TENCENT_SECRET_ID",
+    "tencent_secret_key": "TENCENT_SECRET_KEY", "doubao_api_key": "DOUBAO_API_KEY",
+}
+
+
+def select_engine(env=None):
+    """选生效 ASR 引擎:只用配置齐全的云服务,优先 tencent > doubao,均无则本地 sherpa。
+    显式 CODEY_ASR_ENGINE/asr_engine 仅当该服务配置存在时才生效(否则按存在情况自动选)。
+    env=None 走 config(config.json > env > 默认);显式 env dict 兼容老调用。"""
+    if env is None:
+        get = config.get
+        explicit = (config.get("asr_engine") or "auto").strip().lower()
+    else:
+        def get(k):
+            return env.get(_ENGINE_ENV.get(k, k), "")
+        explicit = (env.get("CODEY_ASR_ENGINE") or "auto").strip().lower()
+    return _resolve_engine(explicit, _has_tencent(get), _has_doubao(get))
 
 
 def paste_enabled(env=None):

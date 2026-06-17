@@ -74,9 +74,15 @@ def test_select_engine_env_tencent_precedence():
     assert envcfg.select_engine(env) == "tencent"
     # 只有 doubao key → doubao
     assert envcfg.select_engine({"DOUBAO_API_KEY": "d"}) == "doubao"
-    # 显式 asr_engine 覆盖自动优先级
+    # 显式 doubao 但无 doubao 配置、却有 tencent 配置 → 不用 doubao,回落到配置在的 tencent
     assert envcfg.select_engine({"CODEY_ASR_ENGINE": "doubao", "TENCENT_APPID": "a",
-                                 "TENCENT_SECRET_ID": "b", "TENCENT_SECRET_KEY": "c"}) == "doubao"
+                                 "TENCENT_SECRET_ID": "b", "TENCENT_SECRET_KEY": "c"}) == "tencent"
+    # 显式 doubao 且 doubao 配置在 → doubao(即便 tencent 也在)
+    assert envcfg.select_engine({"CODEY_ASR_ENGINE": "doubao", "DOUBAO_API_KEY": "d",
+                                 "TENCENT_APPID": "a", "TENCENT_SECRET_ID": "b", "TENCENT_SECRET_KEY": "c"}) == "doubao"
+    # 显式 sherpa → 永远本地(即便云配置都在)
+    assert envcfg.select_engine({"CODEY_ASR_ENGINE": "sherpa", "TENCENT_APPID": "a",
+                                 "TENCENT_SECRET_ID": "b", "TENCENT_SECRET_KEY": "c"}) == "sherpa"
     # 啥都没有 → sherpa;tencent 三件套缺一不算
     assert envcfg.select_engine({}) == "sherpa"
     assert envcfg.select_engine({"TENCENT_APPID": "a", "TENCENT_SECRET_ID": "b"}) == "sherpa"
