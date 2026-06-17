@@ -159,6 +159,25 @@ static void usbOnFrame(uint8_t type, const uint8_t* payload, uint16_t len) {
   }
 }
 
+// ---- 300ms 音频切分:netTask 把 32ms 片段累积成 300ms 整块再发(WS/USB 共用)----
+static const size_t CHUNK_BYTES = 9600;        // 300ms @ 16k/mono/int16 = 4800 样本 ×2
+static uint8_t g_sendBuf[CHUNK_BYTES];         // 静态(不压 netTask 栈)
+static size_t  g_sendLen = 0;
+
+typedef void (*PcmSink)(const uint8_t*, size_t);
+static void sinkUsb(const uint8_t* p, size_t n) { usbSendFrame(U_PCM, p, (uint16_t)n); }
+static void sinkWs (const uint8_t* p, size_t n) { g_ws.sendBIN((uint8_t*)p, n); }
+
+static void pcmAccum(const uint8_t* seg, size_t segN, PcmSink sink) {  // 累积满 300ms 即整块发
+  size_t off = 0;
+  while (off < segN) {
+    size_t take = CHUNK_BYTES - g_sendLen; if (take > segN - off) take = segN - off;
+    memcpy(g_sendBuf + g_sendLen, seg + off, take); g_sendLen += take; off += take;
+    if (g_sendLen == CHUNK_BYTES) { sink(g_sendBuf, CHUNK_BYTES); g_sendLen = 0; }
+  }
+}
+static void pcmFlush(PcmSink sink) { if (g_sendLen) { sink(g_sendBuf, g_sendLen); g_sendLen = 0; } }  // 停录发尾巴
+
 // 所有阻塞网络 IO 都在这里(core 0):WS 维護/连接、HTTP fetch、mDNS、语音上行。主loop 永不等待。
 static const uint32_t USB_ACTIVE_TIMEOUT_MS = 4000;   // 连续无帧超此值 → 判 USB 离线,回落 WiFi
 static const uint32_t USB_PROBE_INTERVAL_MS = 500;    // 离线探针节流(~2/s),避免刷屏 serial / 抢 mutex
@@ -176,33 +195,33 @@ static void netTask(void*) {
     }
 
     if (g_usbActive) {
-      // —— USB 分支:不走网络 ——
+      // —— USB 分支:不走网络;PCM 按 300ms 累积成块再发 ——
+      uint8_t buf[1024]; size_t n;                                   // 先排空已录 PCM(满 300ms 即发)
+      while ((n = xStreamBufferReceive(g_voiceSB, buf, sizeof(buf), 0)) > 0) pcmAccum(buf, n, sinkUsb);
       if (g_netListenReq == 1) {
-        g_netListenReq = 0;
+        g_netListenReq = 0; g_sendLen = 0;                          // 新会话:丢上次残留累积
         String j = listenStartJson();
         usbSendFrame(U_LISTEN, (const uint8_t*)j.c_str(), (uint16_t)j.length());
       } else if (g_netListenReq == 2) {
-        g_netListenReq = 0;
+        g_netListenReq = 0; pcmFlush(sinkUsb);                      // 停录:先 flush 尾巴(不丢尾音)
         const char* s = "{\"state\":\"stop\"}";
         usbSendFrame(U_LISTEN, (const uint8_t*)s, (uint16_t)strlen(s));
       } else if (g_netListenReq == 3) {
-        g_netListenReq = 0;
+        g_netListenReq = 0; g_sendLen = 0;
         const char* s = "{\"state\":\"cancel\"}";
         usbSendFrame(U_LISTEN, (const uint8_t*)s, (uint16_t)strlen(s));
       }
       if (g_netFocusReq) { g_netFocusReq = false; usbSendFrame(U_FOCUS, (const uint8_t*)g_focusSid, (uint16_t)strlen(g_focusSid)); }
-      uint8_t buf[1024]; size_t n;
-      while ((n = xStreamBufferReceive(g_voiceSB, buf, sizeof(buf), 0)) > 0) usbSendFrame(U_PCM, buf, (uint16_t)n);
     } else if (g_wifi) {
       // —— 现有 WiFi 分支:原样 ——
       if (!started || g_netReconnect) { g_netReconnect = false; resolveMac(); wsConnect(); started = true; lastFetch = 0; }
       g_ws.loop();                                  // WS 维护(connect 阻塞只在本任务,不卡渲染)
-      if (g_netListenReq == 1)      { g_netListenReq = 0; wsListen(true); }
-      else if (g_netListenReq == 2) { g_netListenReq = 0; wsListen(false); }
-      else if (g_netListenReq == 3) { g_netListenReq = 0; wsListenCancel(); }          // 取消:清同步进输入框的文本
+      uint8_t buf[1024]; size_t n;                  // 转发主loop采集的语音 PCM(按 300ms 累积成块)
+      while (g_wsConn && (n = xStreamBufferReceive(g_voiceSB, buf, sizeof(buf), 0)) > 0) pcmAccum(buf, n, sinkWs);
+      if (g_netListenReq == 1)      { g_netListenReq = 0; g_sendLen = 0; wsListen(true); }
+      else if (g_netListenReq == 2) { g_netListenReq = 0; pcmFlush(sinkWs); wsListen(false); }   // 停录 flush 尾巴
+      else if (g_netListenReq == 3) { g_netListenReq = 0; g_sendLen = 0; wsListenCancel(); }     // 取消:清同步进输入框的文本
       if (g_netFocusReq)            { g_netFocusReq = false; wsFocus(g_focusSid); }   // 切 macOS 终端 tab
-      uint8_t buf[1024]; size_t n;                  // 转发主loop采集的语音 PCM
-      while (g_wsConn && (n = xStreamBufferReceive(g_voiceSB, buf, sizeof(buf), 0)) > 0) g_ws.sendBIN(buf, n);
       uint32_t now = millis();                      // 定时拉 usage(语音时让路)
       if (!g_voice && (lastFetch == 0 || now - lastFetch > 30000)) { lastFetch = now; fetchState(); maybeRepointWs(); }
     } else { started = false; }
