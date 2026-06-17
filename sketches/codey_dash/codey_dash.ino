@@ -208,15 +208,16 @@ static void drawVoiceViz(int cx, int cy, float level, float t, uint32_t color, i
   level = level < 0 ? 0 : (level > 1 ? 1 : level);
   const bool finalizing = (vphase == 2), result = (vphase == 3);
   uint32_t base = finalizing ? 0xFFB454 : color;                 // 识别中转琥珀
-  const int   N = 96;                                            // 采样点
+  const int   N = 72;                                            // 采样点(配抗锯齿宽线,够顺滑)
   const float W = 360.0f, MAXAMP = 46.0f;                        // 波带宽 / 最大振幅
   float drive = result ? 0.10f : (finalizing ? 0.34f : (0.22f + 0.78f * level));
   float spin  = (finalizing ? 1.1f : 1.9f) * t;                 // 流动速度
 
-  const float freq[3]   = { 1.3f, 2.1f, 3.4f };                 // 三条波:频率/速度/振幅权/色深
+  const float freq[3]   = { 1.3f, 2.1f, 3.4f };                 // 三条波:频率/速度/振幅权/色深/线宽
   const float spd[3]    = { 1.0f, -1.5f, 0.7f };
   const float ampk[3]   = { 1.0f, 0.62f, 0.40f };
   const float shadek[3] = { 0.22f, -0.04f, -0.28f };
+  const float lw[3]     = { 2.4f, 1.7f, 1.3f };                 // 各波抗锯齿线宽(半径)
 
   for (int w = 0; w < 3; w++) {
     uint16_t cc = c565(shade(base, shadek[w]));
@@ -229,7 +230,10 @@ static void drawVoiceViz(int cx, int cy, float level, float t, uint32_t color, i
       int x  = cx - (int)(W / 2) + (int)(fx * W);
       int yu = cy + (int)yv;                                    // 上波
       int yd = cy - (int)yv;                                    // 下波(镜像)→ 对称团块
-      if (i > 0) { cv.drawLine(px0, py0u, x, yu, cc); cv.drawLine(px0, py0d, x, yd, cc); }
+      if (i > 0) {                                              // 抗锯齿宽线(drawWideLine)→ 平滑无颗粒
+        cv.drawWideLine(px0, py0u, x, yu, lw[w], cc);
+        cv.drawWideLine(px0, py0d, x, yd, lw[w], cc);
+      }
       px0 = x; py0u = yu; py0d = yd;
     }
   }
