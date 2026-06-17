@@ -76,3 +76,11 @@ def test_payload_containing_magic_bytes_decodes_as_one_frame():
     frames, logs = uf.FrameDecoder().feed(raw)
     assert frames == [(uf.STATE, b"\xc0\xde\x01\x02")]
     assert logs == b""
+
+
+def test_large_pcm_frame_roundtrips_9600B():
+    # 300ms @16k/mono/int16 = 9600B;须能编/解码往返(USB 上行 PCM 帧)
+    pcm = bytes(9600)
+    raw = uf.encode(uf.PCM, pcm)
+    frames, logs = uf.FrameDecoder().feed(raw)
+    assert frames == [(uf.PCM, pcm)] and logs == b""
