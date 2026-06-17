@@ -287,10 +287,11 @@ static void drawVoiceOverlay() {
     cv.drawFastHLine(CX - 130, 176, 260, c565(shade(color, -0.3f)));   // divider under transcript
   }
 
-  // 3) 状态行(底部):● LISTENING/RECOGNIZING(VLW 抗锯齿)+ 提示
+  // 3) 状态行(底部):● RECOGNIZING/FINALIZING(VLW 抗锯齿)+ 提示
+  //    按一下=开始流式识别(RECOGNIZING,边说边出);再按一下=停止 → 收尾(FINALIZING)→ 结果。
   if (!result) {
-    const char* label = (g_vphase == 1) ? "LISTENING" : "RECOGNIZING";
-    const uint32_t dotc = (g_vphase == 1) ? 0x3CCB7F : 0xFFC24A;   // green listening, amber finalizing
+    const char* label = (g_vphase == 1) ? "RECOGNIZING" : "FINALIZING";
+    const uint32_t dotc = (g_vphase == 1) ? 0x3CCB7F : 0xFFC24A;   // green 识别中(流式), amber 收尾中
     int dots = ((int)(t * 2)) % 4;
     char title[24]; snprintf(title, sizeof(title), "%s%.*s", label, dots, "...");
     char full[24];  snprintf(full,  sizeof(full),  "%s...", label);   // fixed width -> no jiggle
@@ -742,7 +743,7 @@ void loop() {
       if (detailProv >= 0 && detailIdx >= 0 && detailIdx < PROV[detailProv].nsess)
         { strncpy(g_voiceSid, PROV[detailProv].sess[detailIdx].id, sizeof(g_voiceSid) - 1); g_voiceSid[sizeof(g_voiceSid) - 1] = 0; }
       else g_voiceSid[0] = 0;
-      if (g_micOK && g_wsConn) {
+      if (g_micOK && (g_wsConn || g_usbActive)) {          // USB 在线也可:走 U_PCM 帧而非 WS
         g_vphase = 1;
         if (g_voiceSB) xStreamBufferReset(g_voiceSB);
         g_netListenReq = 1;                                // netTask -> listen:start
