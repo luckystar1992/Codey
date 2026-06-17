@@ -14,11 +14,15 @@ CONFIG_PATH = os.path.join(
 )
 
 DEFAULTS = {
-    "asr_engine": "auto",            # auto | sherpa | doubao
+    "asr_engine": "auto",            # auto | sherpa | doubao | tencent
     "paste": True,
     "paste_auto_enter": False,
     "doubao_api_key": "",
     "doubao_app_id": "",
+    "tencent_appid": "",             # 腾讯云实时 ASR:AppId/SecretId/SecretKey + 引擎(默认 16k_zh)
+    "tencent_secret_id": "",
+    "tencent_secret_key": "",
+    "tencent_engine": "16k_zh",
     "refresh_ms": 2000,              # usage 后台刷新间隔(ms),clamp [500, 60000]
     "display": {
         "columns": {"status": True, "model": True, "ctx": True,
@@ -28,7 +32,7 @@ DEFAULTS = {
     },
 }
 
-SECRET_KEYS = ("doubao_api_key",)
+SECRET_KEYS = ("doubao_api_key", "tencent_secret_id", "tencent_secret_key")
 
 # key -> 对应 env 变量名(无映射的 refresh_ms / display 直接 config-or-default)
 _ENV_MAP = {
@@ -37,9 +41,13 @@ _ENV_MAP = {
     "paste_auto_enter": "CODEY_PASTE_AUTO_ENTER",
     "doubao_api_key": "DOUBAO_API_KEY",
     "doubao_app_id": "DOUBAO_APP_ID",
+    "tencent_appid": "TENCENT_APPID",
+    "tencent_secret_id": "TENCENT_SECRET_ID",
+    "tencent_secret_key": "TENCENT_SECRET_KEY",
+    "tencent_engine": "TENCENT_ENGINE",
 }
 
-_ENGINES = ("auto", "sherpa", "doubao")
+_ENGINES = ("auto", "sherpa", "doubao", "tencent")
 _REFRESH_MIN, _REFRESH_MAX = 500, 60000
 _TRUTHY = ("1", "true", "yes")
 
@@ -165,7 +173,8 @@ def _validate(partial):
         if k in partial:
             out[k] = _coerce_bool(partial[k])
 
-    for k in ("doubao_api_key", "doubao_app_id"):
+    for k in ("doubao_api_key", "doubao_app_id",
+              "tencent_appid", "tencent_secret_id", "tencent_secret_key", "tencent_engine"):
         if k in partial:
             out[k] = str(partial[k])
 

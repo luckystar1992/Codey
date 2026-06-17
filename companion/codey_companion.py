@@ -30,20 +30,26 @@ def lan_ip():
 
 
 def maybe_fallback_engine():
-    """启动期探豆包流式服务:不可达 或 网络延时 > 阈值(默认 200ms)→ 本运行强制本地 sherpa。
-    只在配置/默认选了豆包时才探(本就本地则跳过)。"""
-    from codey import asr_doubao
-    if asr_stream.effective_engine() != "doubao":
+    """启动期探云端 ASR(tencent/doubao):不可达 或 网络延时 > 阈值(默认 200ms)→ 本运行强制本地 sherpa。
+    只在生效引擎是云端时才探(本就本地则跳过)。"""
+    eng = asr_stream.effective_engine()
+    if eng == "tencent":
+        from codey import asr_tencent as cloud
+        thresh = cloud.TENCENT_MAX_LATENCY_MS
+    elif eng == "doubao":
+        from codey import asr_doubao as cloud
+        thresh = cloud.DOUBAO_MAX_LATENCY_MS
+    else:
         return
-    ok, lat, why = asr_doubao.health_check()
+    ok, lat, why = cloud.health_check()
     if not ok:
         asr_stream.set_engine_override("sherpa")
-        print(f"[asr] 豆包不可达({why})→ 回落本地 sherpa")
-    elif lat > asr_doubao.DOUBAO_MAX_LATENCY_MS:
+        print(f"[asr] {eng} 不可达({why})→ 回落本地 sherpa")
+    elif lat > thresh:
         asr_stream.set_engine_override("sherpa")
-        print(f"[asr] 豆包延时 {lat:.0f}ms > {asr_doubao.DOUBAO_MAX_LATENCY_MS:.0f}ms → 回落本地 sherpa")
+        print(f"[asr] {eng} 延时 {lat:.0f}ms > {thresh:.0f}ms → 回落本地 sherpa")
     else:
-        print(f"[asr] 豆包可达,延时 {lat:.0f}ms → 用豆包")
+        print(f"[asr] {eng} 可达,延时 {lat:.0f}ms → 用 {eng}")
 
 
 def main():

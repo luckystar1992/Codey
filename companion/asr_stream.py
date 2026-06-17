@@ -155,8 +155,12 @@ def effective_engine():
 
 
 def make_backend():
-    """按生效引擎建后端:doubao -> 豆包流式;否则本地 sherpa。"""
-    if effective_engine() == "doubao":
+    """按生效引擎建后端:tencent -> 腾讯流式;doubao -> 豆包流式;否则本地 sherpa。"""
+    engine = effective_engine()
+    if engine == "tencent":
+        from codey.asr_tencent import TencentBackend
+        return TencentBackend()
+    if engine == "doubao":
         from codey.asr_doubao import DoubaoBackend
         return DoubaoBackend()
     b = SherpaBackend(get_recognizer())

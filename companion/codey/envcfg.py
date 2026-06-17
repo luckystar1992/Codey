@@ -43,16 +43,27 @@ def load_dotenv(path=None):
     return data
 
 
+def _tencent_keys(get):
+    return bool((get("tencent_appid") or "").strip()
+                and (get("tencent_secret_id") or "").strip()
+                and (get("tencent_secret_key") or "").strip())
+
+
 def select_engine(env=None):
-    # env=None:走 config(asr_engine + doubao_api_key);显式 env:按 env 算(兼容)。
+    # env=None:走 config(asr_engine + 各家 key);显式 env:按 env 算(兼容老调用)。
+    # auto 优先级:tencent(三件套齐) > doubao(key) > sherpa(本地)。
     if env is None:
         eng = (config.get("asr_engine") or "auto").strip().lower()
-        if eng in ("sherpa", "doubao"):
+        if eng in ("sherpa", "doubao", "tencent"):
             return eng
+        if _tencent_keys(config.get):
+            return "tencent"
         return "doubao" if (config.get("doubao_api_key") or "").strip() else "sherpa"
     eng = (env.get("CODEY_ASR_ENGINE") or "auto").strip().lower()
-    if eng in ("sherpa", "doubao"):
+    if eng in ("sherpa", "doubao", "tencent"):
         return eng
+    if env.get("TENCENT_APPID", "").strip() and env.get("TENCENT_SECRET_ID", "").strip() and env.get("TENCENT_SECRET_KEY", "").strip():
+        return "tencent"
     return "doubao" if (env.get("DOUBAO_API_KEY") or "").strip() else "sherpa"
 
 

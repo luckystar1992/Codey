@@ -65,3 +65,51 @@ def test_skip_probe_when_already_local(monkeypatch):
         assert called["n"] == 0 and asr._engine_override is None
     finally:
         asr.set_engine_override(None)
+
+
+def test_select_engine_env_tencent_precedence():
+    from codey import envcfg
+    # tencent 三件套齐 → 优先于 doubao
+    env = {"TENCENT_APPID": "a", "TENCENT_SECRET_ID": "b", "TENCENT_SECRET_KEY": "c", "DOUBAO_API_KEY": "d"}
+    assert envcfg.select_engine(env) == "tencent"
+    # 只有 doubao key → doubao
+    assert envcfg.select_engine({"DOUBAO_API_KEY": "d"}) == "doubao"
+    # 显式 asr_engine 覆盖自动优先级
+    assert envcfg.select_engine({"CODEY_ASR_ENGINE": "doubao", "TENCENT_APPID": "a",
+                                 "TENCENT_SECRET_ID": "b", "TENCENT_SECRET_KEY": "c"}) == "doubao"
+    # 啥都没有 → sherpa;tencent 三件套缺一不算
+    assert envcfg.select_engine({}) == "sherpa"
+    assert envcfg.select_engine({"TENCENT_APPID": "a", "TENCENT_SECRET_ID": "b"}) == "sherpa"
+
+
+def test_select_engine_config_tencent(monkeypatch, tmp_path):
+    from codey import config, envcfg
+    monkeypatch.setattr(config, "CONFIG_PATH", str(tmp_path / "config.json"))
+    config.save({"tencent_appid": "a", "tencent_secret_id": "b", "tencent_secret_key": "c"})
+    assert envcfg.select_engine() == "tencent"          # 配置三件套 → tencent
+    config.save({"asr_engine": "sherpa"})
+    assert envcfg.select_engine() == "sherpa"           # 显式 sherpa 覆盖
+
+
+def test_fallback_dispatches_to_tencent(monkeypatch):
+    from codey import asr_tencent
+    try:
+        asr.set_engine_override(None)
+        monkeypatch.setattr(asr, "effective_engine", lambda: "tencent")
+        monkeypatch.setattr(asr_tencent, "health_check", lambda *a, **k: (True, 350.0, ""))
+        cc.maybe_fallback_engine()
+        assert asr._engine_override == "sherpa"          # 腾讯延时高 → 回落 sherpa
+    finally:
+        asr.set_engine_override(None)
+
+
+def test_fallback_keeps_tencent_when_fast(monkeypatch):
+    from codey import asr_tencent
+    try:
+        asr.set_engine_override(None)
+        monkeypatch.setattr(asr, "effective_engine", lambda: "tencent")
+        monkeypatch.setattr(asr_tencent, "health_check", lambda *a, **k: (True, 60.0, ""))
+        cc.maybe_fallback_engine()
+        assert asr._engine_override is None              # 快 → 不回落
+    finally:
+        asr.set_engine_override(None)
