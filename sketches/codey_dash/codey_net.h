@@ -190,7 +190,8 @@ static void netTask(void*) {
 
     usbRxPump();
     if (g_usbActive && millis() - g_usbLastRx > USB_ACTIVE_TIMEOUT_MS) g_usbActive = false;   // 超时回落 WiFi
-    if (!g_usbActive && Serial && millis() - lastProbe >= USB_PROBE_INTERVAL_MS) {            // 仅 CDC 已连主机才节流探针
+    // 仅 boot 完成(核1 不再打印开机日志)+ CDC 已连主机 才发探针;否则核1 println 会插进帧 → CRC 坏 → 日志乱码
+    if (!g_usbActive && g_bootReady && Serial && millis() - lastProbe >= USB_PROBE_INTERVAL_MS) {
       lastProbe = millis(); usbSendFrame(U_HELLO, (const uint8_t*)"v1", 2);                   // 找 companion(在=优先 USB)
     }
 

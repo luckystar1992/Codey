@@ -61,6 +61,21 @@ async def handle_frame(ftype, payload, channel, session, on_hello=None):
         await session.on_control({"type": "focus", "session": payload.decode("utf-8", "ignore")})
 
 
+def _emit_dev_logs(log_buf, new_bytes):
+    """累积非帧字节,按行打印「干净」设备日志:滤掉损坏帧漏出的二进制碎片,只留可见 ASCII 行。
+    未满行(无 \\n)留在 buf;纯二进制无换行时丢旧防无界增长。"""
+    log_buf.extend(new_bytes)
+    while b"\n" in log_buf:
+        i = log_buf.index(b"\n")
+        line = bytes(log_buf[:i])
+        del log_buf[:i + 1]
+        clean = "".join(chr(b) for b in line if 32 <= b < 127 or b == 9)   # 可见 ASCII + tab
+        if clean.strip():
+            print("[dev] " + clean, flush=True)
+    if len(log_buf) > 2048:                                                # 纯二进制无换行 → 丢旧
+        del log_buf[:-256]
+
+
 def find_port():
     hits = sorted(glob.glob("/dev/cu.usbmodem*"))
     return hits[0] if hits else None
@@ -100,6 +115,7 @@ def _session_loop(ser, app, make_backend, loop):
     session = VoiceSession(channel, make_backend, None, loop,
                            resolve_pid=app.pid_for_session, resolve_status=app.status_for_session)
     dec = uf.FrameDecoder()
+    log_buf = bytearray()
 
     def mark_online():
         online["v"] = True
@@ -112,7 +128,7 @@ def _session_loop(ser, app, make_backend, loop):
             if data:
                 frames, logs = dec.feed(data)
                 if logs:
-                    print("[dev] " + logs.decode("utf-8", "replace"), end="", flush=True)
+                    _emit_dev_logs(log_buf, logs)
                 for ftype, payload in frames:
                     # 顺序处理(.result() 阻塞读线程直到该帧处理完)— 刻意与 WS 路径一致,
                     # 避免 PCM 与 listen:stop 并发复用同一 sherpa backend。代价:ASR 慢时读暂停,

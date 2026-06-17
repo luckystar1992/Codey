@@ -74,3 +74,17 @@ async def test_state_req_frame_triggers_on_hello():
     await handle_frame(uf.STATE_REQ, b"", UsbChannel(FakeSerialWriter()),
                        FakeSession(), on_hello=lambda: called.__setitem__("n", called["n"] + 1))
     assert called["n"] == 1
+
+
+def test_emit_dev_logs_filters_binary_and_buffers_partial(capsys):
+    from codey.usb_link import _emit_dev_logs
+    buf = bytearray()
+    _emit_dev_logs(buf, b"\xc0\xde\x01\x02[ws] connected\n")   # 损坏帧二进制前缀 + 真日志行
+    out = capsys.readouterr().out
+    assert "[ws] connected" in out
+    for b in (0xc0, 0xde):                                     # 二进制字节被滤掉
+        assert chr(b) not in out
+    _emit_dev_logs(buf, b"[state] x")                          # 半行(无换行)→ 不打印,留 buf
+    assert capsys.readouterr().out == ""
+    _emit_dev_logs(buf, b"y\n")                                # 补全 → 打印整行
+    assert "[dev] [state] xy" in capsys.readouterr().out
