@@ -202,31 +202,39 @@ static void wsEvent(WStype_t type, uint8_t* payload, size_t len) {
 
 // ---------- voice visualizer ----------
 // 圆屏语音可视化:中心呼吸光球 + 一圈随麦克风电平起伏的径向声条(叠加行波 → 有机"声波环"灵动感)。
-// vphase: 1 听写(provider 色,随电平灵动) / 2 识别中(琥珀,缓转、低幅) / 3 结果(平静收束)。
+// vphase: 1 听写(provider 色) / 2 识别中(琥珀,缓) / 3 结果(近平线)。Siri 流体波带:
+// 3 条不同频率/相位/速度/色深的正弦叠加 + 两端包络收窄 + 上下镜像;振幅由平滑电平 level 驱动。
 static void drawVoiceViz(int cx, int cy, float level, float t, uint32_t color, int vphase) {
   level = level < 0 ? 0 : (level > 1 ? 1 : level);
   const bool finalizing = (vphase == 2), result = (vphase == 3);
   uint32_t base = finalizing ? 0xFFB454 : color;                 // 识别中转琥珀
-  const int N = 44; const float R0 = 60.0f, MAXLEN = 48.0f;
-  float spin  = (finalizing ? 1.6f : 2.4f) * t;                  // 行波转速(识别中更缓)
-  float drive = result ? 0.18f : (finalizing ? 0.32f : (0.30f + 0.70f * level));  // 整体幅度
+  const int   N = 96;                                            // 采样点
+  const float W = 360.0f, MAXAMP = 46.0f;                        // 波带宽 / 最大振幅
+  float drive = result ? 0.10f : (finalizing ? 0.34f : (0.22f + 0.78f * level));
+  float spin  = (finalizing ? 1.1f : 1.9f) * t;                 // 流动速度
 
-  // 中心呼吸光球(3D 着色:暗底 + 左上高光)
-  int coreR = (int)(18 + drive * 12);
-  cv.fillSmoothCircle(cx, cy, coreR + 7, c565(shade(base, -0.66f)));
-  cv.fillSmoothCircle(cx, cy, coreR,     c565(shade(base, result ? 0.15f : -0.04f)));
-  cv.fillSmoothCircle(cx - coreR / 4, cy - coreR / 4, (int)(coreR * 0.55f), c565(shade(base, 0.38f)));
+  const float freq[3]   = { 1.3f, 2.1f, 3.4f };                 // 三条波:频率/速度/振幅权/色深
+  const float spd[3]    = { 1.0f, -1.5f, 0.7f };
+  const float ampk[3]   = { 1.0f, 0.62f, 0.40f };
+  const float shadek[3] = { 0.22f, -0.04f, -0.28f };
 
-  // 径向声条:高度 = drive × 行波包络;越长越亮,端点加圆点更顺滑
-  for (int i = 0; i < N; i++) {
-    float a = (i / (float)N) * 2.0f * PI;
-    float w = 0.5f + 0.34f * sinf(a * 4.0f + spin) + 0.16f * sinf(a * 7.0f - spin * 1.3f);   // ~[0,1] 行波
-    float len = MAXLEN * drive * (0.30f + 0.70f * w); if (len < 2.0f) len = 2.0f;
-    float cs = cosf(a), sn = sinf(a), r2 = R0 + len;
-    uint16_t cc = c565(shade(base, -0.15f + (len / MAXLEN) * 0.6f));
-    cv.drawLine(cx + (int)(R0 * cs), cy + (int)(R0 * sn), cx + (int)(r2 * cs), cy + (int)(r2 * sn), cc);
-    cv.fillSmoothCircle(cx + (int)(r2 * cs), cy + (int)(r2 * sn), 2, c565(shade(base, 0.25f)));
+  for (int w = 0; w < 3; w++) {
+    uint16_t cc = c565(shade(base, shadek[w]));
+    int px0 = 0, py0u = 0, py0d = 0;
+    for (int i = 0; i <= N; i++) {
+      float fx  = (float)i / N;                                 // 0..1
+      float env = sinf(fx * PI);                                // 端点收窄到 0
+      float amp = MAXAMP * drive * ampk[w] * env;
+      float yv  = amp * sinf(fx * 6.2832f * freq[w] + spin * spd[w]);
+      int x  = cx - (int)(W / 2) + (int)(fx * W);
+      int yu = cy + (int)yv;                                    // 上波
+      int yd = cy - (int)yv;                                    // 下波(镜像)→ 对称团块
+      if (i > 0) { cv.drawLine(px0, py0u, x, yu, cc); cv.drawLine(px0, py0d, x, yd, cc); }
+      px0 = x; py0u = yu; py0d = yd;
+    }
   }
+  int r = (int)(5 + drive * 7);                                 // 中心电平光点(呼吸)
+  cv.fillSmoothCircle(cx, cy, r, c565(shade(base, result ? 0.10f : 0.30f)));
 }
 
 // draw a UTF-8 (CJK) string centered at (cx,cy), wrapping by codepoint to fit maxW
