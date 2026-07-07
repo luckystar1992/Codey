@@ -9,7 +9,7 @@ import time
 
 from .util import clamp_pct
 
-# 与 config._KINDLE_MIN/MAX 及 DEFAULTS["kindle_refresh_s"] 一致;此处独立再夹一次,
+# 与 config 的 kindle 组 clamp 区间一致(refresh_s / sizes.*);此处独立再夹一次,
 # 保证本纯函数即便被传入未经 config 夹取的值也永不越界(有意的双重 clamp)。
 _KINDLE_MIN, _KINDLE_MAX = 5, 3600
 _KSIZE_MIN, _KSIZE_MAX = 12, 48
