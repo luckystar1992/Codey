@@ -55,6 +55,13 @@
   .toast.err{display:block;background:#2a1414;border:1px solid #5d1f1f;color:#ff8a8a}
   /* mirror + history (existing) */
   .mirror iframe{width:480px;height:520px;max-width:100%;border:0;border-radius:14px;background:#000}
+  /* kindle preview: Paperwhite 外壳 + 758px iframe 缩放 (scale .45 → 341×461) */
+  .kframe{width:381px;max-width:100%;margin:4px 0;background:#3a3d42;border-radius:22px;
+    padding:20px 20px 8px;box-shadow:0 6px 20px rgba(0,0,0,.4)}
+  .kscreen{width:341px;height:461px;overflow:hidden;background:#fff;margin:0 auto;border-radius:2px}
+  .kscreen iframe{width:758px;height:1024px;border:0;background:#fff;
+    transform:scale(.45);transform-origin:top left;display:block}
+  .klogo{text-align:center;color:#9aa0a6;font-size:13px;letter-spacing:1px;padding:6px 0 2px}
   .hist{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;
     max-height:640px;overflow:auto}
   .hist h2{margin:0 0 10px;font-size:13px;color:var(--dim);letter-spacing:1px}
@@ -70,6 +77,7 @@
     <button data-tab="teach">教学</button>
     <button data-tab="config">配置</button>
     <button data-tab="mirror">设备镜像</button>
+    <button data-tab="kindle">Kindle 预览</button>
     <button data-tab="history">识别历史</button>
   </nav>
 
@@ -132,6 +140,14 @@
     <div class="mirror" id="mirrorbox"></div>
   </section>
 
+  <!-- ============ Kindle 预览 ============ -->
+  <section id="kindle">
+    <div class="card"><h2>Kindle 预览</h2>
+      <p class="muted">模仿 6″ Paperwhite 显示 <code>/kindle</code> 监视页,按管理台配置的间隔自动刷新
+        (iframe 内 <code>&lt;meta refresh&gt;</code>)。字号/换行按 Kindle 真实 758px 逻辑宽渲染再等比缩放。</p></div>
+    <div class="kframe"><div class="kscreen" id="kscreen"></div><div class="klogo">kindle</div></div>
+  </section>
+
   <!-- ============ 识别历史 ============ -->
   <section id="history">
     <div class="hist"><h2>ASR 识别历史</h2><div id="list"><div class="empty">切换到本页后自动加载…</div></div></div>
@@ -149,7 +165,7 @@ function setDot(ok,msg){
 }
 
 /* ---------- Tab 切换 ---------- */
-let curTab='welcome', histTimer=null, mirrorLoaded=false, cfgLoaded=false;
+let curTab='welcome', histTimer=null, mirrorLoaded=false, kindleLoaded=false, cfgLoaded=false;
 function showTab(tab){
   curTab=tab;
   document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on', b.dataset.tab===tab));
@@ -161,6 +177,12 @@ function showTab(tab){
     document.getElementById('mirrorbox').innerHTML =
       '<iframe src="/sim?live=1" title="device"></iframe>';
     mirrorLoaded=true;
+  }
+  // Kindle 预览:首次进入才插入 iframe;/kindle 自带 meta refresh 自动刷新
+  if(tab==='kindle' && !kindleLoaded){
+    document.getElementById('kscreen').innerHTML =
+      '<iframe src="/kindle" title="kindle"></iframe>';
+    kindleLoaded=true;
   }
   // 配置:首次进入才拉取
   if(tab==='config' && !cfgLoaded){ loadConfig(); }
