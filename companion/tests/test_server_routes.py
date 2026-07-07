@@ -149,3 +149,32 @@ class TestServerRoutes(unittest.TestCase):
         text = body.decode("utf-8")
         self.assertIn('data-tab="kindle"', text)   # nav 按钮存在
         self.assertIn('src="/kindle"', text)        # iframe 指向 /kindle
+
+    # --- 采集重构:_collect_once / start_collectors ---
+
+    def test_collect_once_updates_cache(self):
+        from codey import collect
+        app = server.App()
+        fake = {"claude": [{"tokens_total": 1000}], "codex": []}
+        orig = collect.collect_sessions
+        collect.collect_sessions = lambda: fake
+        try:
+            app._collect_once()
+        finally:
+            collect.collect_sessions = orig
+        self.assertEqual(app.session_cache, fake)
+        self.assertEqual(app.tok_rate["claude"]["val"], 0)          # 首次:prev=None → 0
+        self.assertIsNotNone(app.tok_rate["claude"]["prev"])         # prev 已记录
+        self.assertEqual(app.tok_rate["claude"]["prev"]["tokens"], 1000)
+
+    def test_start_collectors_returns_live_daemon_thread(self):
+        from codey import collect
+        app = server.App()
+        orig = collect.collect_sessions
+        collect.collect_sessions = lambda: {"claude": [], "codex": []}   # 让后台线程做轻活
+        try:
+            t = app.start_collectors()
+            self.assertTrue(t.is_alive())
+            self.assertTrue(t.daemon)
+        finally:
+            collect.collect_sessions = orig

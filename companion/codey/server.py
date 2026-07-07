@@ -140,21 +140,31 @@ class App:
 
     def start_background(self):
         self.whisper.start()
-        threading.Thread(target=self._refresh_loop, daemon=True).start()
+        self.start_collectors()
         threading.Thread(target=self._ngrok_loop, daemon=True).start()
+
+    def start_collectors(self):
+        """只起会话采集后台线程(填 session_cache/tok_rate);/kindle 与 /codey/state 依赖它。返回该线程。"""
+        t = threading.Thread(target=self._refresh_loop, daemon=True)
+        t.start()
+        return t
+
+    def _collect_once(self):
+        """采集一次并加锁更新 session_cache / tok_rate / chime。"""
+        cache = collect.collect_sessions()
+        with self.lock:
+            self.chime.update(prev_cache=self.session_cache, cur_cache=cache)
+            self.session_cache = cache
+            for pid in ("claude", "codex"):
+                total = sum(s.get("tokens_total", 0) for s in cache.get(pid, []))
+                cur = {"tokens": total, "at": time.time() * 1000}
+                prev = self.tok_rate[pid]["prev"]
+                self.tok_rate[pid] = {"prev": cur, "val": collect.tokens_per_min(prev, cur)}
 
     def _refresh_loop(self):
         while True:
             try:
-                cache = collect.collect_sessions()
-                with self.lock:
-                    self.chime.update(prev_cache=self.session_cache, cur_cache=cache)
-                    self.session_cache = cache
-                    for pid in ("claude", "codex"):
-                        total = sum(s.get("tokens_total", 0) for s in cache.get(pid, []))
-                        cur = {"tokens": total, "at": time.time() * 1000}
-                        prev = self.tok_rate[pid]["prev"]
-                        self.tok_rate[pid] = {"prev": cur, "val": collect.tokens_per_min(prev, cur)}
+                self._collect_once()
             except Exception as e:                                 # 单次失败不影响服务
                 print("collect_sessions failed:", e)
             time.sleep(max(0.5, config.get("refresh_ms") / 1000))  # 实时可配,下界 0.5s
