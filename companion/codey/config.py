@@ -90,7 +90,7 @@ def _coerce_bool(v):
 def _coerce_int(v, default):
     try:
         return int(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):   # inf(如 JSON 1e999)-> OverflowError
         return default
 
 

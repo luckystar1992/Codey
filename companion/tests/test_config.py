@@ -80,3 +80,14 @@ def test_kindle_group_bad_types_fall_back(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "CONFIG_PATH", str(p))
     k = cfg.get("kindle")
     assert k["font_scale"] == 1.5 and k["sizes"]["title"] == 21   # 坏值不抛错,回默认
+
+
+def test_kindle_group_infinity_falls_back_not_raises(tmp_path, monkeypatch):
+    # JSON 里的 1e999 会被 json.loads 解析成 inf;int(inf) 抛 OverflowError,不得外泄
+    monkeypatch.setattr(cfg, "CONFIG_PATH", str(tmp_path / "config.json"))
+    cfg.save({"kindle": {"refresh_s": 1e999, "sizes": {"title": 1e999}}})   # 不得抛 OverflowError
+    k = cfg.get("kindle")
+    assert k["refresh_s"] == 30 and k["sizes"]["title"] == 21     # inf 视坏值 → 回默认
+    p = tmp_path / "config.json"
+    p.write_text('{"kindle": {"refresh_s": 1e999}}')             # 盘上坏值读取也不抛错
+    assert cfg.get("kindle")["refresh_s"] == 30
