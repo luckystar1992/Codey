@@ -50,23 +50,33 @@ def test_default_columns_include_summary_branch(tmp_path, monkeypatch):
     assert cols.get("branch") is True, "branch missing from default columns"
 
 
-def test_kindle_refresh_default(tmp_path, monkeypatch):
+def test_kindle_group_defaults(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "CONFIG_PATH", str(tmp_path / "config.json"))
-    assert cfg.get("kindle_refresh_s") == 30
+    k = cfg.get("kindle")
+    assert k["refresh_s"] == 30 and k["font_scale"] == 1.5 and k["line_height"] == 1.45
+    assert k["font_family"] == "serif" and k["theme"] == "light" and k["bold_emphasis"] is True
+    assert k["sizes"]["title"] == 21 and k["sizes"]["session2"] == 17
+    assert "kindle_refresh_s" not in cfg.all()          # 顶层键已并入组
 
 
-def test_kindle_refresh_save_clamps(tmp_path, monkeypatch):
+def test_kindle_group_clamps_and_coerces(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "CONFIG_PATH", str(tmp_path / "config.json"))
-    cfg.save({"kindle_refresh_s": 99999})
-    assert cfg.get("kindle_refresh_s") == 3600      # clamp 上界
-    cfg.save({"kindle_refresh_s": 1})
-    assert cfg.get("kindle_refresh_s") == 5         # clamp 下界
-    cfg.save({"kindle_refresh_s": "abc"})
-    assert cfg.get("kindle_refresh_s") == 30        # 坏值回默认
+    cfg.save({"kindle": {"font_scale": 9, "line_height": 0.1, "refresh_s": 1,
+                         "font_family": "bogus", "theme": "dark", "bold_emphasis": "no",
+                         "sizes": {"title": 999, "quota": 5}}})
+    k = cfg.get("kindle")
+    assert k["font_scale"] == 3.0 and k["line_height"] == 1.0    # float clamp 上/下界
+    assert k["refresh_s"] == 5                                    # int clamp 下界
+    assert k["font_family"] == "serif"                           # 非法枚举回默认
+    assert k["theme"] == "dark"                                  # 合法枚举保留
+    assert k["bold_emphasis"] is False                          # "no" -> False
+    assert k["sizes"]["title"] == 48 and k["sizes"]["quota"] == 12   # size clamp
+    assert k["sizes"]["provider"] == 20                          # 未改分区保留默认(深合并)
 
 
-def test_kindle_refresh_bad_file_value_falls_back(tmp_path, monkeypatch):
+def test_kindle_group_bad_types_fall_back(tmp_path, monkeypatch):
     p = tmp_path / "config.json"
-    p.write_text(json.dumps({"kindle_refresh_s": "bogus"}))
+    p.write_text(json.dumps({"kindle": {"font_scale": "abc", "sizes": "nope"}}))
     monkeypatch.setattr(cfg, "CONFIG_PATH", str(p))
-    assert cfg.get("kindle_refresh_s") == 30        # 文件坏值不抛错,回默认
+    k = cfg.get("kindle")
+    assert k["font_scale"] == 1.5 and k["sizes"]["title"] == 21   # 坏值不抛错,回默认
