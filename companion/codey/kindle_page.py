@@ -4,11 +4,14 @@
 白底黑字高对比(e-ink)、单列大字号。只读 state,缺键容错,永不抛错。
 """
 import html
+import math
 import time
 
 from .util import clamp_pct
 
-_REFRESH_MIN, _REFRESH_MAX, _REFRESH_DEFAULT = 5, 3600, 30
+# 与 config._KINDLE_MIN/MAX 及 DEFAULTS["kindle_refresh_s"] 一致;此处独立再夹一次,
+# 保证本纯函数即便被传入未经 config 夹取的值也永不越界(有意的双重 clamp)。
+_KINDLE_MIN, _KINDLE_MAX, _KINDLE_DEFAULT = 5, 3600, 30
 _STATUS_ICON = {"executing": "●", "thinking": "◐", "waiting": "○", "done": "✓"}
 
 _CSS = (
@@ -37,14 +40,16 @@ def _esc(v):
 
 
 def _fmt_kilo(n):
-    """1234 -> '1.2k';999 -> '999';坏值 -> '0'。"""
+    """1234 -> '1.2k';999 -> '999';坏值/非有限值(nan/inf) -> '0'。"""
     try:
         f = float(n)
+        if not math.isfinite(f):        # nan/inf 不可 int(),按坏值处理
+            return "0"
+        if f >= 1000:
+            return "{:.1f}k".format(f / 1000.0)
+        return str(int(f))
     except (TypeError, ValueError):
         return "0"
-    if f >= 1000:
-        return "{:.1f}k".format(f / 1000.0)
-    return str(int(f))
 
 
 def _bar_html(pct):
@@ -109,9 +114,9 @@ def render(state, refresh_s, now=None):
     state = state if isinstance(state, dict) else {}
     try:
         r = int(refresh_s)
-    except (TypeError, ValueError):
-        r = _REFRESH_DEFAULT
-    r = max(_REFRESH_MIN, min(_REFRESH_MAX, r))
+    except (TypeError, ValueError, OverflowError):   # inf -> OverflowError
+        r = _KINDLE_DEFAULT
+    r = max(_KINDLE_MIN, min(_KINDLE_MAX, r))
     hhmm = time.strftime("%H:%M", time.localtime(now if now is not None else time.time()))
     providers = state.get("providers") if isinstance(state.get("providers"), list) else []
     body = ['<div class="hdr"><span class="t">{} ({}s)</span><b>CODEY MONITOR</b></div>'

@@ -50,12 +50,21 @@ def test_contains_providers_quota_sessions():
 
 def test_escapes_user_strings():
     st = make_state()
-    st["providers"][0]["sessions"][0]["summary"] = "<script>alert(1)</script>"
-    st["providers"][0]["sessions"][0]["git"]["branch"] = "a<b>&c"
+    sess = st["providers"][0]["sessions"][0]
+    sess["summary"] = "<script>alert(1)</script>"
+    sess["git"]["branch"] = "a<b>&c"
+    sess["model"] = "<img src=x onerror=1>"
+    sess["name"] = "<i>proj</i>"
+    st["providers"][0]["name"] = "<b>Claude</b>"
     h = kindle_page.render(st, 30)
     assert "<script>alert(1)</script>" not in h
     assert "&lt;script&gt;" in h
     assert "a&lt;b&gt;&amp;c" in h
+    # model / session name / provider name 同样必须转义(锁住行为,防未来回退)
+    assert "<img src=x onerror=1>" not in h
+    assert "&lt;img src=x onerror=1&gt;" in h
+    assert "<i>proj</i>" not in h and "&lt;i&gt;proj&lt;/i&gt;" in h
+    assert "<b>Claude</b>" not in h and "&lt;b&gt;Claude&lt;/b&gt;" in h
 
 
 def test_empty_sessions_placeholder():
@@ -78,6 +87,19 @@ def test_never_raises_on_garbage():
     assert "<html" in kindle_page.render(None, 30)
     assert "<html" in kindle_page.render({"providers": [None, {}]}, 30)
     assert "(无数据)" in kindle_page.render({}, 30)
+
+
+def test_never_raises_on_non_finite_numbers():
+    # nan/inf 的百分比与 tokens_per_min 及 refresh_s 都不得让 render 抛错(永不抛错契约)
+    inf, nan = float("inf"), float("nan")
+    st = make_state()
+    p = st["providers"][0]
+    p["session"]["used_pct"] = inf
+    p["weekly"]["used_pct"] = nan
+    p["agg"]["tokens_per_min"] = inf
+    p["sessions"][0]["context_pct"] = nan
+    assert "<html" in kindle_page.render(st, inf)
+    assert "<html" in kindle_page.render(st, nan)
 
 
 def test_time_deterministic_with_now():

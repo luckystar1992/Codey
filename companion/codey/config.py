@@ -52,7 +52,8 @@ _ENGINES = ("auto", "sherpa", "doubao", "tencent")
 _REFRESH_MIN, _REFRESH_MAX = 500, 60000
 _KINDLE_MIN, _KINDLE_MAX = 5, 3600
 
-# int 型配置键 -> clamp 区间(get/_validate 共用;新增 int 键只需在此登记)
+# int 型配置键 -> clamp 区间(get/_validate 共用;新增 int 键只需在此登记)。
+# 注意:每个键必须同时在 DEFAULTS 登记,否则 get/_validate 索引 DEFAULTS[key] 会 KeyError。
 _INT_CLAMPS = {
     "refresh_ms": (_REFRESH_MIN, _REFRESH_MAX),
     "kindle_refresh_s": (_KINDLE_MIN, _KINDLE_MAX),

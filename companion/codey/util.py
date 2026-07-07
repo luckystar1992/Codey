@@ -7,7 +7,7 @@ def clamp_pct(x):
     """取整(四舍五入,半值向上,贴合 JS Math.round)并夹到 0..100。"""
     try:
         v = math.floor(float(x) + 0.5)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):   # inf -> OverflowError,nan -> ValueError
         v = 0
     return max(0, min(100, v))
 
