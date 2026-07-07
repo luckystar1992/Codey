@@ -113,13 +113,12 @@ class TestServerRoutes(unittest.TestCase):
 
     # --- /kindle ---
 
-    def test_schema_and_values_include_kindle_refresh(self):
+    def test_kindle_group_in_values_and_not_in_main_schema(self):
         payload = server.config_get_payload()
-        self.assertIn("kindle_refresh_s", payload["schema"])
-        self.assertEqual(payload["schema"]["kindle_refresh_s"]["type"], "int")
-        self.assertEqual(payload["schema"]["kindle_refresh_s"]["min"], 5)
-        self.assertEqual(payload["schema"]["kindle_refresh_s"]["max"], 3600)
-        self.assertEqual(payload["values"]["kindle_refresh_s"], 30)   # config.all() 自动带上
+        self.assertNotIn("kindle_refresh_s", payload["schema"])   # 已移出「配置」tab
+        self.assertIn("kindle", payload["values"])                # 组在 config.all()
+        self.assertEqual(payload["values"]["kindle"]["refresh_s"], 30)
+        self.assertEqual(payload["values"]["kindle"]["font_scale"], 1.5)
 
     def test_kindle_route_returns_html(self):
         # 起真实 HTTPServer 服务一次请求,验证 do_GET 分支真的接上了
