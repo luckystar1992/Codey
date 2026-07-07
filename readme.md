@@ -204,6 +204,18 @@ cd companion
 # or directly: python3 codey_companion.py
 ```
 
+Kindle monitor only (lightweight):
+
+```bash
+cd companion
+./deploy_kindle.sh            # foreground; add `start --bg` to background it (PID/logs: data/kindle.*)
+```
+
+Runs just the collector + HTTP server — **no voice/ASR/USB/ngrok, no sherpa model, zero third-party
+deps** — sharing the same data source as the full companion. Open `http://<Mac-IP>:8787/kindle` on the
+Kindle over the same LAN (default port 8787, override with `CODEY_PORT`). Don't run it on the same port
+as the full companion — pick one.
+
 Check the state API:
 
 ```bash

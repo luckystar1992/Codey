@@ -195,6 +195,17 @@ cd companion
 # 或直接：python3 codey_companion.py
 ```
 
+只看 Kindle 监视页（轻量）：
+
+```bash
+cd companion
+./deploy_kindle.sh            # 前台启动；加 `start --bg` 可后台（PID/日志 data/kindle.*）
+```
+
+只跑会话采集 + HTTP，**不启动语音/ASR/USB/ngrok，无需 sherpa 模型、零第三方依赖**，与完整
+Companion 用同一数据源。Kindle 连同一局域网后打开 `http://<Mac-IP>:8787/kindle`（默认 8787，
+`CODEY_PORT` 可改）。注意勿与完整 Companion 同端口并行——二选一。
+
 检查状态 API：
 
 ```bash
