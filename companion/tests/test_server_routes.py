@@ -141,13 +141,16 @@ class TestServerRoutes(unittest.TestCase):
         self.assertIn('http-equiv="refresh" content="30"', body)     # 默认 30s
         self.assertNotIn("<script", body)                             # 零 JS
 
-    def test_admin_html_has_kindle_preview_tab(self):
-        # 回归守卫:锁住管理台里的 Kindle 预览 tab 与 iframe 指向,防未来误删/改错
+    def test_admin_html_has_kindle_preview_panel(self):
+        # 回归守卫:锁住预览 tab、控件面板与关键控件,防未来误删/改错
         body, ctype = server.read_static(os.path.join(server.WEB_DIR, "admin.html"))
         self.assertIsNotNone(body)
         text = body.decode("utf-8")
-        self.assertIn('data-tab="kindle"', text)   # nav 按钮存在
-        self.assertIn('src="/kindle"', text)        # iframe 指向 /kindle
+        self.assertIn('data-tab="kindle"', text)              # nav 按钮
+        self.assertIn('id="kpanel"', text)                    # 控件面板
+        self.assertIn('name="kindle.font_scale"', text)       # 字号缩放控件
+        self.assertIn('name="kindle.sizes.title"', text)      # 分区字号控件
+        self.assertIn('name="kindle.theme"', text)            # 配色控件
 
     # --- 采集重构:_collect_once / start_collectors ---
 
