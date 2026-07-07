@@ -48,3 +48,25 @@ def test_default_columns_include_summary_branch(tmp_path, monkeypatch):
     cols = cfg.get("display")["columns"]
     assert cols.get("summary") is True, "summary missing from default columns"
     assert cols.get("branch") is True, "branch missing from default columns"
+
+
+def test_kindle_refresh_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(cfg, "CONFIG_PATH", str(tmp_path / "config.json"))
+    assert cfg.get("kindle_refresh_s") == 30
+
+
+def test_kindle_refresh_save_clamps(tmp_path, monkeypatch):
+    monkeypatch.setattr(cfg, "CONFIG_PATH", str(tmp_path / "config.json"))
+    cfg.save({"kindle_refresh_s": 99999})
+    assert cfg.get("kindle_refresh_s") == 3600      # clamp 上界
+    cfg.save({"kindle_refresh_s": 1})
+    assert cfg.get("kindle_refresh_s") == 5         # clamp 下界
+    cfg.save({"kindle_refresh_s": "abc"})
+    assert cfg.get("kindle_refresh_s") == 30        # 坏值回默认
+
+
+def test_kindle_refresh_bad_file_value_falls_back(tmp_path, monkeypatch):
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({"kindle_refresh_s": "bogus"}))
+    monkeypatch.setattr(cfg, "CONFIG_PATH", str(p))
+    assert cfg.get("kindle_refresh_s") == 30        # 文件坏值不抛错,回默认

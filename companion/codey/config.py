@@ -24,6 +24,7 @@ DEFAULTS = {
     "tencent_secret_key": "",
     "tencent_engine": "16k_zh",
     "refresh_ms": 2000,              # usage 后台刷新间隔(ms),clamp [500, 60000]
+    "kindle_refresh_s": 30,          # Kindle 页 meta refresh 间隔(秒),clamp [5, 3600]
     "display": {
         "columns": {"status": True, "model": True, "ctx": True,
                     "tokens": True, "memory": True, "turn": True,
@@ -49,6 +50,13 @@ _ENV_MAP = {
 
 _ENGINES = ("auto", "sherpa", "doubao", "tencent")
 _REFRESH_MIN, _REFRESH_MAX = 500, 60000
+_KINDLE_MIN, _KINDLE_MAX = 5, 3600
+
+# int 型配置键 -> clamp 区间(get/_validate 共用;新增 int 键只需在此登记)
+_INT_CLAMPS = {
+    "refresh_ms": (_REFRESH_MIN, _REFRESH_MAX),
+    "kindle_refresh_s": (_KINDLE_MIN, _KINDLE_MAX),
+}
 _TRUTHY = ("1", "true", "yes")
 
 _LOCK = threading.Lock()
@@ -117,11 +125,11 @@ def get(key):
     if key == "display":
         return _deep_merge_display(file_cfg.get("display"))
 
-    if key == "refresh_ms":
-        if "refresh_ms" in file_cfg:
-            return _clamp(_coerce_int(file_cfg["refresh_ms"], DEFAULTS["refresh_ms"]),
-                          _REFRESH_MIN, _REFRESH_MAX)
-        return DEFAULTS["refresh_ms"]
+    if key in _INT_CLAMPS:
+        lo, hi = _INT_CLAMPS[key]
+        if key in file_cfg:
+            return _clamp(_coerce_int(file_cfg[key], DEFAULTS[key]), lo, hi)
+        return DEFAULTS[key]
 
     if key not in DEFAULTS:
         return None
@@ -178,11 +186,9 @@ def _validate(partial):
         if k in partial:
             out[k] = str(partial[k])
 
-    if "refresh_ms" in partial:
-        out["refresh_ms"] = _clamp(
-            _coerce_int(partial["refresh_ms"], DEFAULTS["refresh_ms"]),
-            _REFRESH_MIN, _REFRESH_MAX,
-        )
+    for k, (lo, hi) in _INT_CLAMPS.items():
+        if k in partial:
+            out[k] = _clamp(_coerce_int(partial[k], DEFAULTS[k]), lo, hi)
 
     if "display" in partial and isinstance(partial["display"], dict):
         disp = {}
