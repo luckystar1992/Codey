@@ -11,28 +11,74 @@ from .util import clamp_pct
 
 # 与 config._KINDLE_MIN/MAX 及 DEFAULTS["kindle_refresh_s"] 一致;此处独立再夹一次,
 # 保证本纯函数即便被传入未经 config 夹取的值也永不越界(有意的双重 clamp)。
-_KINDLE_MIN, _KINDLE_MAX, _KINDLE_DEFAULT = 5, 3600, 30
+_KINDLE_MIN, _KINDLE_MAX = 5, 3600
+_KSIZE_MIN, _KSIZE_MAX = 12, 48
 _STATUS_ICON = {"executing": "●", "thinking": "◐", "waiting": "○", "done": "✓"}
 
-_CSS = (
-    "body{background:#fff;color:#000;margin:0;padding:10px 14px;"
-    "font-family:Georgia,serif;font-size:19px;line-height:1.45}"
-    ".hdr{border-bottom:3px solid #000;padding-bottom:6px}"
-    ".hdr b{font-size:21px;letter-spacing:1px}"
-    ".hdr .t{float:right;font-size:17px}"
-    ".warn{border:2px solid #000;padding:4px 8px;margin:8px 0;font-weight:bold}"
-    ".prov{border-bottom:3px solid #000;padding:10px 0}"
-    ".prov h2{font-size:20px;margin:0 0 6px}"
-    ".qrow{margin:4px 0}.qrow .lbl{display:inline-block;width:2.2em}"
-    ".bar{display:inline-block;width:52%;height:13px;border:2px solid #000;"
-    "vertical-align:middle}.bar i{display:block;height:100%;background:#000}"
-    ".pct{font-weight:bold}"
-    ".agg{font-size:17px;margin:4px 0 8px}"
-    ".sess{border-top:1px solid #000;padding:7px 0}"
-    ".sess .l1{font-weight:bold}"
-    ".sess .l2,.sess .l3{font-size:17px;margin-left:1.4em}"
-    ".none{font-size:17px;padding:6px 0}"
-)
+_FONTS = {"serif": "Georgia, 'Times New Roman', serif",
+          "sans": "Helvetica, Arial, sans-serif",
+          "mono": "'Courier New', monospace"}
+_THEMES = {"light": ("#fff", "#000"), "dark": ("#000", "#fff")}
+_DEFAULT_SIZES = {"title": 21, "provider": 20, "quota": 19, "session1": 19, "session2": 17}
+
+
+def _fnum(v, default, lo, hi):
+    """float 强转 + clamp;坏值/非有限值回 default。"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(f):
+        return default
+    return max(lo, min(hi, f))
+
+
+def _fint(v, default, lo, hi):
+    """int 强转(经 float 容忍 "19"/19.0)+ clamp;坏值回 default。"""
+    try:
+        n = int(round(float(v)))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return max(lo, min(hi, n))
+
+
+def _build_css(kindle):
+    """由 kindle 配置 dict 算出内联 CSS 字符串。缺字段/坏值用内置默认,永不抛错。"""
+    kindle = kindle if isinstance(kindle, dict) else {}
+    scale = _fnum(kindle.get("font_scale"), 1.5, 1.0, 3.0)
+    lh = _fnum(kindle.get("line_height"), 1.45, 1.0, 2.2)
+    fam = _FONTS.get(kindle.get("font_family"), _FONTS["serif"])
+    bg, fg = _THEMES.get(kindle.get("theme"), _THEMES["light"])
+    bold = "bold" if kindle.get("bold_emphasis", True) else "normal"
+    sizes = kindle.get("sizes") if isinstance(kindle.get("sizes"), dict) else {}
+
+    def sz(role):
+        base = _fint(sizes.get(role), _DEFAULT_SIZES[role], _KSIZE_MIN, _KSIZE_MAX)
+        return int(round(base * scale))
+
+    title, prov, quota = sz("title"), sz("provider"), sz("quota")
+    s1, s2 = sz("session1"), sz("session2")
+    barh = max(6, int(round(quota * 0.6)))
+    return (
+        "body{{background:{bg};color:{fg};margin:0;padding:10px 14px;"
+        "font-family:{fam};font-size:{s2}px;line-height:{lh}}}"
+        ".hdr{{border-bottom:3px solid {fg};padding-bottom:6px}}"
+        ".hdr b{{font-size:{title}px;letter-spacing:1px}}"
+        ".hdr .t{{float:right;font-size:{s2}px}}"
+        ".warn{{border:2px solid {fg};padding:4px 8px;margin:8px 0;font-weight:bold}}"
+        ".prov{{border-bottom:3px solid {fg};padding:10px 0}}"
+        ".prov h2{{font-size:{prov}px;margin:0 0 6px;font-weight:{bold}}}"
+        ".qrow{{margin:4px 0;font-size:{quota}px}}.qrow .lbl{{display:inline-block;width:2.2em}}"
+        ".bar{{display:inline-block;width:52%;height:{barh}px;border:2px solid {fg};"
+        "vertical-align:middle}}.bar i{{display:block;height:100%;background:{fg}}}"
+        ".pct{{font-weight:{bold}}}"
+        ".agg{{font-size:{s2}px;margin:4px 0 8px}}"
+        ".sess{{border-top:1px solid {fg};padding:7px 0}}"
+        ".sess .l1{{font-size:{s1}px;font-weight:{bold}}}"
+        ".sess .l2,.sess .l3{{font-size:{s2}px;margin-left:1.4em}}"
+        ".none{{font-size:{s2}px;padding:6px 0}}"
+    ).format(bg=bg, fg=fg, fam=fam, lh=lh, bold=bold, title=title,
+             prov=prov, quota=quota, s1=s1, s2=s2, barh=barh)
 
 
 def _esc(v):
@@ -106,17 +152,15 @@ def _provider_html(p):
     return "".join(parts)
 
 
-def render(state, refresh_s, now=None):
-    """state + 刷新秒数 -> 完整 HTML 文档字符串。缺键/坏值容错,永不抛错。
+def render(state, kindle, now=None):
+    """state + kindle 配置 dict -> 完整 HTML 文档字符串。缺键/坏值容错,永不抛错。
 
-    now:epoch 秒,None 取当前时间(测试传定值保证确定性)。
+    kindle:见 config DEFAULTS['kindle'];缺字段用内置默认。now:epoch 秒,None 取当前时间。
     """
     state = state if isinstance(state, dict) else {}
-    try:
-        r = int(refresh_s)
-    except (TypeError, ValueError, OverflowError):   # inf -> OverflowError
-        r = _KINDLE_DEFAULT
-    r = max(_KINDLE_MIN, min(_KINDLE_MAX, r))
+    kindle = kindle if isinstance(kindle, dict) else {}
+    r = _fint(kindle.get("refresh_s"), 30, _KINDLE_MIN, _KINDLE_MAX)
+    css = _build_css(kindle)
     hhmm = time.strftime("%H:%M", time.localtime(now if now is not None else time.time()))
     providers = state.get("providers") if isinstance(state.get("providers"), list) else []
     body = ['<div class="hdr"><span class="t">{} ({}s)</span><b>CODEY MONITOR</b></div>'
@@ -134,4 +178,4 @@ def render(state, refresh_s, now=None):
         "<title>Codey Monitor</title>\n"
         "<style>{css}</style></head>\n"
         "<body>{body}</body></html>"
-    ).format(r=r, css=_CSS, body="".join(body))
+    ).format(r=r, css=css, body="".join(body))
