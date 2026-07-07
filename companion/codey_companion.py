@@ -8,25 +8,14 @@
 运行:  python3 codey_companion.py   (运行期间保持开启供手表拉取)
 """
 import os
-import socket
 import threading
 from http.server import ThreadingHTTPServer
 
 import asr_stream
+from codey.netinfo import lan_ip
 from codey.server import App, make_handler
 
 PORT = int(os.environ.get("CODEY_PORT") or 8787)
-
-
-def lan_ip():
-    """本机 LAN IP(仅做主机名解析,不对外发包)。"""
-    try:
-        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
-            if not ip.startswith("127."):
-                return ip
-    except Exception:
-        pass
-    return "127.0.0.1"
 
 
 def maybe_fallback_engine():
