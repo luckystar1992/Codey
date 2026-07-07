@@ -9,6 +9,7 @@ from urllib.parse import urlparse, parse_qs
 from . import asr_history
 from . import collect
 from . import config
+from . import kindle_page
 from . import ngrok_api
 from .asr import WhisperManager
 from .chime import ChimeState
@@ -32,6 +33,8 @@ SCHEMA = {
     "doubao_app_id": {"type": "password", "label": "豆包 App ID", "restart": False},
     "refresh_ms": {"type": "int", "min": 500, "max": 60000,
                    "label": "用量刷新间隔(ms)", "restart": False},
+    "kindle_refresh_s": {"type": "int", "min": 5, "max": 3600,
+                         "label": "Kindle 刷新间隔(秒)", "restart": False},
     "display": {
         "type": "group",
         "label": "设备显示项",
@@ -214,6 +217,9 @@ def make_handler(app):
             elif path == "/sim":
                 body, ctype = read_static(SIM_PATH)
                 self._send(200, body, ctype) if body is not None else self._send(404, b"sim missing", "text/plain")
+            elif path in ("/kindle", "/kindle.html"):
+                page = kindle_page.render(app.state(), config.get("kindle_refresh_s"))
+                self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
             elif path.startswith("/codey/config"):
                 self._send(200, json.dumps(config_get_payload(), ensure_ascii=False).encode())
             elif path.startswith("/codey/state"):

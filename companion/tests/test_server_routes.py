@@ -110,3 +110,34 @@ class TestServerRoutes(unittest.TestCase):
         self.assertEqual(body, b"<h1>hi</h1>")
         self.assertEqual(ctype, "text/html; charset=utf-8")
         self.assertEqual(server.read_static(os.path.join(d, "missing.html")), (None, None))
+
+    # --- /kindle ---
+
+    def test_schema_and_values_include_kindle_refresh(self):
+        payload = server.config_get_payload()
+        self.assertIn("kindle_refresh_s", payload["schema"])
+        self.assertEqual(payload["schema"]["kindle_refresh_s"]["type"], "int")
+        self.assertEqual(payload["schema"]["kindle_refresh_s"]["min"], 5)
+        self.assertEqual(payload["schema"]["kindle_refresh_s"]["max"], 3600)
+        self.assertEqual(payload["values"]["kindle_refresh_s"], 30)   # config.all() 自动带上
+
+    def test_kindle_route_returns_html(self):
+        # 起真实 HTTPServer 服务一次请求,验证 do_GET 分支真的接上了
+        import threading, urllib.request
+        from http.server import HTTPServer
+        app = server.App()                       # 不 start_background,不起后台线程
+        httpd = HTTPServer(("127.0.0.1", 0), server.make_handler(app))
+        port = httpd.server_address[1]
+        t = threading.Thread(target=httpd.handle_request, daemon=True)
+        t.start()
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:%d/kindle" % port, timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertIn("text/html", resp.headers.get("Content-Type", ""))
+                body = resp.read().decode("utf-8")
+        finally:
+            t.join(timeout=5)
+            httpd.server_close()
+        self.assertIn("CODEY MONITOR", body)
+        self.assertIn('http-equiv="refresh" content="30"', body)     # 默认 30s
+        self.assertNotIn("<script", body)                             # 零 JS
