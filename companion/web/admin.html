@@ -55,26 +55,6 @@
   .toast.err{display:block;background:#2a1414;border:1px solid #5d1f1f;color:#ff8a8a}
   /* mirror + history (existing) */
   .mirror iframe{width:480px;height:520px;max-width:100%;border:0;border-radius:14px;background:#000}
-  /* kindle preview: Paperwhite 外壳 + 758px iframe 缩放 (scale .45 → 341×461) */
-  .kframe{width:381px;max-width:100%;margin:4px 0;background:#3a3d42;border-radius:22px;
-    padding:20px 20px 8px;box-shadow:0 6px 20px rgba(0,0,0,.4)}
-  .kscreen{width:341px;height:461px;overflow:hidden;background:#fff;margin:0 auto;border-radius:2px}
-  .kscreen iframe{width:758px;height:1024px;border:0;background:#fff;
-    transform:scale(.45);transform-origin:top left;display:block}
-  .klogo{text-align:center;color:#9aa0a6;font-size:13px;letter-spacing:1px;padding:6px 0 2px}
-  /* kindle 预览:两列(左预览 + 右控件面板) */
-  .kwrap{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
-  .kpanel{flex:1;min-width:240px;background:var(--panel);border:1px solid var(--line);
-    border-radius:14px;padding:16px}
-  .kpanel h3{margin:14px 0 8px;font-size:13px;color:var(--green)} .kpanel h3:first-child{margin-top:0}
-  .kfield{margin:0 0 12px} .kfield label{display:block;font-size:13px;margin-bottom:5px}
-  .kfield input[type=range]{width:100%;accent-color:var(--green)}
-  .kfield input[type=number]{width:80px} .kfield select{min-width:160px}
-  .kfield label span{color:var(--green);font-weight:700;margin-left:6px}
-  .kgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px 12px}
-  .kgrid label{display:flex;align-items:center;justify-content:space-between;font-size:12px;
-    background:#0a0b0e;border:1px solid var(--line);border-radius:8px;padding:6px 10px}
-  .kgrid input{width:56px}
   .hist{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;
     max-height:640px;overflow:auto}
   .hist h2{margin:0 0 10px;font-size:13px;color:var(--dim);letter-spacing:1px}
@@ -89,8 +69,8 @@
     <button data-tab="welcome" class="on">欢迎</button>
     <button data-tab="teach">教学</button>
     <button data-tab="config">配置</button>
+    <button data-tab="device">设备配置</button>
     <button data-tab="mirror">设备镜像</button>
-    <button data-tab="kindle">Kindle 预览</button>
     <button data-tab="history">识别历史</button>
   </nav>
 
@@ -147,48 +127,33 @@
     <div id="cfgbody"><div class="card"><p class="muted" id="cfgstatus">加载配置中…</p></div></div>
   </section>
 
+  <!-- ============ 设备配置(USB 直连,路径 B) ============ -->
+  <section id="device">
+    <div class="card"><h2>设备配置 · USB 直连</h2>
+      <p class="muted">数据线连着设备时,直接在这里读取/写入 WiFi 配置,不用切到设备的
+        <code>Codey-Setup</code> 配网热点。走的是设备 ↔ Companion 现有的 USB-CDC 帧链路,
+        不依赖浏览器的 Web Serial API,任意浏览器可用。</p></div>
+    <div class="card">
+      <h3>设备当前状态</h3>
+      <div id="devstatus" class="muted">加载中…</div>
+      <button class="btn" type="button" id="devRefresh" style="margin-top:10px">刷新</button>
+    </div>
+    <div class="card">
+      <h3>写入 WiFi</h3>
+      <div class="note">设备收到后会现场尝试连接(最长约 8 秒),成功才会保存并切换。</div>
+      <div class="field"><label>SSID</label>
+        <input type="text" id="devSsid" placeholder="要连接的 WiFi 名称" autocomplete="off"></div>
+      <div class="field"><label>密码</label>
+        <input type="password" id="devPass" placeholder="留空 = 沿用设备历史记住的密码(如有)" autocomplete="off"></div>
+      <button class="btn" type="button" id="devSave">写入设备并连接</button>
+      <div class="toast" id="devtoast"></div>
+    </div>
+  </section>
+
   <!-- ============ 设备镜像 ============ -->
   <section id="mirror">
     <div class="card"><h2>设备镜像</h2><p class="muted">实时镜像手表圆屏(与设备同源渲染)。</p></div>
     <div class="mirror" id="mirrorbox"></div>
-  </section>
-
-  <!-- ============ Kindle 预览 ============ -->
-  <section id="kindle">
-    <div class="card"><h2>Kindle 预览</h2>
-      <p class="muted">左侧模仿 6″ Paperwhite 显示 <code>/kindle</code> 监视页(真实 758px 逻辑宽渲染再缩放);
-        右侧调节字号/行距/字体/配色等,改动即时应用并同步到真机 Kindle(下次刷新生效)。</p></div>
-    <div class="kwrap">
-      <div class="kframe"><div class="kscreen" id="kscreen"></div><div class="klogo">kindle</div></div>
-      <div class="kpanel" id="kpanel">
-        <h3>显示设置</h3>
-        <div class="kfield"><label>刷新间隔(秒)</label>
-          <input type="number" name="kindle.refresh_s" min="5" max="3600" step="5"></div>
-        <div class="kfield"><label>字号缩放 <span id="v_scale"></span></label>
-          <input type="range" name="kindle.font_scale" min="1" max="3" step="0.1"></div>
-        <div class="kfield"><label>行距 <span id="v_lh"></span></label>
-          <input type="range" name="kindle.line_height" min="1" max="2.2" step="0.05"></div>
-        <div class="kfield"><label>字体</label>
-          <select name="kindle.font_family">
-            <option value="serif">衬线</option><option value="sans">无衬线</option><option value="mono">等宽</option>
-          </select></div>
-        <div class="kfield"><label>配色</label>
-          <select name="kindle.theme">
-            <option value="light">浅(黑字白底)</option><option value="dark">深(白字黑底)</option>
-          </select></div>
-        <div class="kfield"><label class="chk"><input type="checkbox" name="kindle.bold_emphasis"><span>重点加粗</span></label></div>
-        <h3>分区字号(px)</h3>
-        <div class="kgrid">
-          <label>页头<input type="number" name="kindle.sizes.title" min="12" max="48"></label>
-          <label>端名<input type="number" name="kindle.sizes.provider" min="12" max="48"></label>
-          <label>额度<input type="number" name="kindle.sizes.quota" min="12" max="48"></label>
-          <label>会话主<input type="number" name="kindle.sizes.session1" min="12" max="48"></label>
-          <label>会话次<input type="number" name="kindle.sizes.session2" min="12" max="48"></label>
-        </div>
-        <div class="kfield" style="margin-top:14px"><button class="btn" type="button" id="kReset">恢复默认</button></div>
-        <div class="toast" id="ktoast"></div>
-      </div>
-    </div>
   </section>
 
   <!-- ============ 识别历史 ============ -->
@@ -208,7 +173,7 @@ function setDot(ok,msg){
 }
 
 /* ---------- Tab 切换 ---------- */
-let curTab='welcome', histTimer=null, mirrorLoaded=false, kindleLoaded=false, cfgLoaded=false;
+let curTab='welcome', histTimer=null, mirrorLoaded=false, cfgLoaded=false;
 function showTab(tab){
   curTab=tab;
   document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on', b.dataset.tab===tab));
@@ -221,10 +186,10 @@ function showTab(tab){
       '<iframe src="/sim?live=1" title="device"></iframe>';
     mirrorLoaded=true;
   }
-  // Kindle 预览:首次进入拉配置填控件 + 载预览;/kindle 自带 meta refresh 自动刷新
-  if(tab==='kindle' && !kindleLoaded){ kindleLoaded=true; loadKindle(); }
   // 配置:首次进入才拉取
   if(tab==='config' && !cfgLoaded){ loadConfig(); }
+  // 设备配置(USB):每次进入都刷新——链路是否在线会变
+  if(tab==='device'){ loadDevice(); }
 }
 document.getElementById('nav').addEventListener('click', e=>{
   const b=e.target.closest('button[data-tab]'); if(b) showTab(b.dataset.tab);
@@ -243,6 +208,48 @@ async function pollHistory(){
 }
 function startHistory(){ if(histTimer) return; pollHistory(); histTimer=setInterval(pollHistory,2000); }
 function stopHistory(){ if(histTimer){ clearInterval(histTimer); histTimer=null; } }
+
+/* ---------- 设备配置(USB 直连,路径 B)---------- */
+function devToast(kind,msg){
+  const t=document.getElementById('devtoast'); if(!t) return;
+  t.className='toast '+kind; t.textContent=msg;
+}
+async function loadDevice(){
+  const box=document.getElementById('devstatus');
+  box.textContent='读取中…';
+  try{
+    const r=await fetch('/device/config');
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok || j.ok===false){
+      box.innerHTML='<span style="color:#ff8a8a">USB 链路不可用:'+esc((j&&j.error)||('HTTP '+r.status))+'</span>';
+      return;
+    }
+    const hist=(j.history||[]).map(h=>esc(h.ssid)+' ×'+h.count).join('、')||'(无)';
+    box.innerHTML='当前:<b>'+esc(j.ssid||'(未连接)')+'</b>'+(j.wifi?' · '+esc(j.ip||''):' · 未连接')+
+      '<br>亮度:'+esc(j.bright)+'<br>历史网络:'+hist;
+  }catch(err){ box.innerHTML='<span style="color:#ff8a8a">读取失败:'+esc(err.message)+'</span>'; }
+}
+async function saveDeviceWifi(){
+  const ssid=document.getElementById('devSsid').value.trim();
+  const pass=document.getElementById('devPass').value;
+  if(!ssid){ devToast('err','请填写 SSID'); return; }
+  const btn=document.getElementById('devSave'); btn.disabled=true;
+  devToast('ok','写入中,设备正在尝试连接(最长约 8 秒)…');
+  try{
+    const r=await fetch('/device/wifi',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ssid, pass})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok || !j.ok) throw new Error((j&&j.message)||(j&&j.error)||('HTTP '+r.status));
+    devToast('ok','已连接 ✓ '+esc(j.ssid||ssid));
+    loadDevice();
+  }catch(err){
+    devToast('err','失败:'+esc(err.message));
+  }finally{
+    btn.disabled=false;
+  }
+}
+document.getElementById('devRefresh').addEventListener('click', loadDevice);
+document.getElementById('devSave').addEventListener('click', saveDeviceWifi);
 
 /* ---------- 配置渲染 ---------- */
 let CFG_SCHEMA=null;
@@ -365,68 +372,6 @@ async function saveConfig(){
   }catch(err){
     btn.disabled=false;
     toast('err','保存失败:'+esc(err.message));
-  }
-}
-
-/* ---------- Kindle 预览面板 ---------- */
-const KDEFAULT={refresh_s:30,font_scale:1.5,line_height:1.45,font_family:'serif',theme:'light',
-  bold_emphasis:true,sizes:{title:21,provider:20,quota:19,session1:19,session2:17}};
-const KSIZES=['title','provider','quota','session1','session2'];
-function kctl(name){ return document.querySelector('#kpanel [name="'+name+'"]'); }
-function kLabels(){
-  document.getElementById('v_scale').textContent=kctl('kindle.font_scale').value+'×';
-  document.getElementById('v_lh').textContent=kctl('kindle.line_height').value;
-}
-function fillKindle(k){
-  k=k||KDEFAULT; const sz=k.sizes||{};
-  kctl('kindle.refresh_s').value=k.refresh_s!=null?k.refresh_s:30;
-  kctl('kindle.font_scale').value=k.font_scale!=null?k.font_scale:1.5;
-  kctl('kindle.line_height').value=k.line_height!=null?k.line_height:1.45;
-  kctl('kindle.font_family').value=k.font_family||'serif';
-  kctl('kindle.theme').value=k.theme||'light';
-  kctl('kindle.bold_emphasis').checked=k.bold_emphasis!==false;
-  KSIZES.forEach(s=>{ kctl('kindle.sizes.'+s).value=(sz[s]!=null?sz[s]:KDEFAULT.sizes[s]); });
-  kLabels();
-}
-function collectKindle(){
-  const sizes={}; KSIZES.forEach(s=>{ sizes[s]=Number(kctl('kindle.sizes.'+s).value)||KDEFAULT.sizes[s]; });
-  return { kindle:{
-    refresh_s:Number(kctl('kindle.refresh_s').value)||30,
-    font_scale:Number(kctl('kindle.font_scale').value)||1.5,
-    line_height:Number(kctl('kindle.line_height').value)||1.45,
-    font_family:kctl('kindle.font_family').value,
-    theme:kctl('kindle.theme').value,
-    bold_emphasis:kctl('kindle.bold_emphasis').checked,
-    sizes:sizes,
-  }};
-}
-function reloadKindlePreview(){
-  // 加时间戳强制 iframe 重新取,服务端按新配置重渲染
-  document.getElementById('kscreen').innerHTML='<iframe src="/kindle?t='+Date.now()+'" title="kindle"></iframe>';
-}
-function ktoast(kind,msg){ const t=document.getElementById('ktoast'); if(!t)return; t.className='toast '+kind; t.textContent=msg; }
-async function saveKindle(){
-  kLabels();
-  try{
-    const r=await fetch('/codey/config',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(collectKindle())});
-    const j=await r.json().catch(()=>({}));
-    if(!r.ok || !j.ok) throw new Error((j&&j.error)||('HTTP '+r.status));
-    ktoast('ok','已应用 ✓ 真机 Kindle 下次刷新同步'); reloadKindlePreview();
-  }catch(err){ ktoast('err','保存失败:'+esc(err.message)); }
-}
-let kindleBound=false;
-async function loadKindle(){
-  try{ const r=await fetch('/codey/config'); const j=await r.json(); fillKindle(j.values&&j.values.kindle); }
-  catch(err){ fillKindle(null); }
-  reloadKindlePreview();
-  if(!kindleBound){
-    kindleBound=true;
-    document.querySelectorAll('#kpanel [name^="kindle."]').forEach(el=>{
-      el.addEventListener('change', saveKindle);
-      if(el.type==='range') el.addEventListener('input', kLabels);
-    });
-    document.getElementById('kReset').addEventListener('click',()=>{ fillKindle(KDEFAULT); saveKindle(); });
   }
 }
 

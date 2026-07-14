@@ -1,6 +1,8 @@
 import json, os, tempfile, unittest
 from codey import server
 from codey import config as cfg
+from codey import usb_frames as uf
+from codey import usb_link
 
 
 class TestServerRoutes(unittest.TestCase):
@@ -111,46 +113,85 @@ class TestServerRoutes(unittest.TestCase):
         self.assertEqual(ctype, "text/html; charset=utf-8")
         self.assertEqual(server.read_static(os.path.join(d, "missing.html")), (None, None))
 
-    # --- /kindle ---
+    # --- /device/config, /device/wifi(路径 B:USB 直连配置)---
 
-    def test_kindle_group_in_values_and_not_in_main_schema(self):
-        payload = server.config_get_payload()
-        self.assertNotIn("kindle_refresh_s", payload["schema"])   # 已移出「配置」tab
-        self.assertIn("kindle", payload["values"])                # 组在 config.all()
-        self.assertEqual(payload["values"]["kindle"]["refresh_s"], 30)
-        self.assertEqual(payload["values"]["kindle"]["font_scale"], 1.5)
-
-    def test_kindle_route_returns_html(self):
-        # 起真实 HTTPServer 服务一次请求,验证 do_GET 分支真的接上了
-        import threading, urllib.request
-        from http.server import HTTPServer
-        app = server.App()                       # 不 start_background,不起后台线程
-        httpd = HTTPServer(("127.0.0.1", 0), server.make_handler(app))
-        port = httpd.server_address[1]
-        t = threading.Thread(target=httpd.handle_request, daemon=True)
-        t.start()
+    def test_device_config_503_when_usb_offline(self):
+        orig = usb_link.send_config_request
+        usb_link.send_config_request = lambda *a, **k: None
         try:
-            with urllib.request.urlopen("http://127.0.0.1:%d/kindle" % port, timeout=5) as resp:
-                self.assertEqual(resp.status, 200)
-                self.assertIn("text/html", resp.headers.get("Content-Type", ""))
-                body = resp.read().decode("utf-8")
+            code, resp = server.device_config_payload()
         finally:
-            t.join(timeout=5)
-            httpd.server_close()
-        self.assertIn("CODEY MONITOR", body)
-        self.assertIn('http-equiv="refresh" content="30"', body)     # 默认 30s
-        self.assertNotIn("<script", body)                             # 零 JS
+            usb_link.send_config_request = orig
+        self.assertEqual(code, 503)
+        self.assertFalse(resp["ok"])
 
-    def test_admin_html_has_kindle_preview_panel(self):
-        # 回归守卫:锁住预览 tab、控件面板与关键控件,防未来误删/改错
+    def test_device_config_passes_through_device_json(self):
+        orig = usb_link.send_config_request
+        usb_link.send_config_request = lambda ftype, payload, **k: (
+            uf.CFG_STATE, b'{"ssid":"home","wifi":true,"ip":"192.168.1.5","bright":200,"history":[]}')
+        try:
+            code, resp = server.device_config_payload()
+        finally:
+            usb_link.send_config_request = orig
+        self.assertEqual(code, 200)
+        self.assertEqual(resp["ssid"], "home")
+        self.assertEqual(resp["ip"], "192.168.1.5")
+
+    def test_device_wifi_post_requires_ssid(self):
+        body = json.dumps({"pass": "x"}).encode()
+        code, resp = server.device_wifi_post(body, len(body))
+        self.assertEqual(code, 400)
+        self.assertIn("error", resp)
+
+    def test_device_wifi_post_bad_json_400(self):
+        code, resp = server.device_wifi_post(b"{not json", 9)
+        self.assertEqual(code, 400)
+
+    def test_device_wifi_post_too_large_400(self):
+        code, resp = server.device_wifi_post(b"{}", server.MAX_DEVICE_WIFI_BYTES + 1)
+        self.assertEqual(code, 400)
+
+    def test_device_wifi_post_503_when_usb_offline(self):
+        orig = usb_link.send_config_request
+        usb_link.send_config_request = lambda *a, **k: None
+        try:
+            body = json.dumps({"ssid": "home", "pass": "secret"}).encode()
+            code, resp = server.device_wifi_post(body, len(body))
+        finally:
+            usb_link.send_config_request = orig
+        self.assertEqual(code, 503)
+        self.assertFalse(resp["ok"])
+
+    def test_device_wifi_post_forwards_ssid_and_pass_to_device(self):
+        seen = {}
+
+        def fake_send(ftype, payload, **k):
+            seen["ftype"] = ftype
+            seen["payload"] = json.loads(payload.decode("utf-8"))
+            return (uf.CFG_ACK, b'{"ok":true,"ssid":"home","message":"connected"}')
+
+        orig = usb_link.send_config_request
+        usb_link.send_config_request = fake_send
+        try:
+            body = json.dumps({"ssid": "home", "pass": "secret"}).encode()
+            code, resp = server.device_wifi_post(body, len(body))
+        finally:
+            usb_link.send_config_request = orig
+        self.assertEqual(code, 200)
+        self.assertTrue(resp["ok"])
+        self.assertEqual(seen["ftype"], uf.CFG_SET)
+        self.assertEqual(seen["payload"], {"wifi_ssid": "home", "wifi_pass": "secret"})
+
+    def test_admin_html_has_device_config_panel(self):
+        # 回归守卫:锁住设备配置 tab 与关键控件,防未来误删/改错
         body, ctype = server.read_static(os.path.join(server.WEB_DIR, "admin.html"))
         self.assertIsNotNone(body)
         text = body.decode("utf-8")
-        self.assertIn('data-tab="kindle"', text)              # nav 按钮
-        self.assertIn('id="kpanel"', text)                    # 控件面板
-        self.assertIn('name="kindle.font_scale"', text)       # 字号缩放控件
-        self.assertIn('name="kindle.sizes.title"', text)      # 分区字号控件
-        self.assertIn('name="kindle.theme"', text)            # 配色控件
+        self.assertIn('data-tab="device"', text)
+        self.assertIn('id="devSsid"', text)
+        self.assertIn('id="devSave"', text)
+        self.assertIn("/device/config", text)
+        self.assertIn("/device/wifi", text)
 
     # --- 采集重构:_collect_once / start_collectors ---
 

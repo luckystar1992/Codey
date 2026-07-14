@@ -31,16 +31,6 @@ DEFAULTS = {
                     "summary": True, "branch": True},
         "providers": {"claude": True, "codex": True},
     },
-    "kindle": {
-        "refresh_s": 30,             # int, clamp [5, 3600]
-        "font_scale": 1.5,           # float, clamp [1.0, 3.0]
-        "line_height": 1.45,         # float, clamp [1.0, 2.2]
-        "font_family": "serif",      # serif | sans | mono
-        "theme": "light",            # light(黑字白底) | dark(白字黑底)
-        "bold_emphasis": True,
-        "sizes": {"title": 21, "provider": 20, "quota": 19,
-                  "session1": 19, "session2": 17},   # 各区块基准 px,渲染再 × font_scale
-    },
 }
 
 SECRET_KEYS = ("doubao_api_key", "tencent_secret_id", "tencent_secret_key")
@@ -60,7 +50,6 @@ _ENV_MAP = {
 
 _ENGINES = ("auto", "sherpa", "doubao", "tencent")
 _REFRESH_MIN, _REFRESH_MAX = 500, 60000
-_KINDLE_MIN, _KINDLE_MAX = 5, 3600
 
 # int 型配置键 -> clamp 区间(get/_validate 共用;新增 int 键只需在此登记)。
 # 注意:每个键必须同时在 DEFAULTS 登记,否则 get/_validate 索引 DEFAULTS[key] 会 KeyError。
@@ -68,11 +57,6 @@ _INT_CLAMPS = {
     "refresh_ms": (_REFRESH_MIN, _REFRESH_MAX),
 }
 
-_FONT_SCALE_MIN, _FONT_SCALE_MAX = 1.0, 3.0
-_LINE_HEIGHT_MIN, _LINE_HEIGHT_MAX = 1.0, 2.2
-_KSIZE_MIN, _KSIZE_MAX = 12, 48
-_KINDLE_FONTS = ("serif", "sans", "mono")
-_KINDLE_THEMES = ("light", "dark")
 _TRUTHY = ("1", "true", "yes")
 
 _LOCK = threading.Lock()
@@ -142,56 +126,9 @@ def _deep_merge_display(file_display):
     return merged
 
 
-def _clean_kindle(kp):
-    """从 partial kindle dict 提取合法字段成干净 dict(数值 clamp / 枚举校验 / bool 强转 /
-    sizes 逐键 clamp)。坏值/非法枚举丢弃。get 与 _validate 共用。"""
-    out = {}
-    if not isinstance(kp, dict):
-        return out
-    d = DEFAULTS["kindle"]
-    if "refresh_s" in kp:
-        out["refresh_s"] = _clamp(_coerce_int(kp["refresh_s"], d["refresh_s"]), _KINDLE_MIN, _KINDLE_MAX)
-    if "font_scale" in kp:
-        out["font_scale"] = _clamp(_coerce_float(kp["font_scale"], d["font_scale"]), _FONT_SCALE_MIN, _FONT_SCALE_MAX)
-    if "line_height" in kp:
-        out["line_height"] = _clamp(_coerce_float(kp["line_height"], d["line_height"]), _LINE_HEIGHT_MIN, _LINE_HEIGHT_MAX)
-    if "font_family" in kp:
-        s = str(kp["font_family"]).strip().lower()
-        if s in _KINDLE_FONTS:
-            out["font_family"] = s
-    if "theme" in kp:
-        s = str(kp["theme"]).strip().lower()
-        if s in _KINDLE_THEMES:
-            out["theme"] = s
-    if "bold_emphasis" in kp:
-        out["bold_emphasis"] = _coerce_bool(kp["bold_emphasis"])
-    if isinstance(kp.get("sizes"), dict):
-        szout = {}
-        for key in d["sizes"]:
-            if key in kp["sizes"]:
-                szout[key] = _clamp(_coerce_int(kp["sizes"][key], d["sizes"][key]), _KSIZE_MIN, _KSIZE_MAX)
-        if szout:
-            out["sizes"] = szout
-    return out
-
-
-def _merge_kindle(file_kindle):
-    """以 DEFAULTS['kindle'] 深拷贝为底,叠加 file 中合法字段(sizes 深合并保留其余分区)。"""
-    merged = copy.deepcopy(DEFAULTS["kindle"])
-    for k, v in _clean_kindle(file_kindle).items():
-        if k == "sizes":
-            merged["sizes"].update(v)
-        else:
-            merged[k] = v
-    return merged
-
-
 def get(key):
-    """合并取值:config.json > env > DEFAULTS。display / kindle 深合并;refresh_ms clamp。"""
+    """合并取值:config.json > env > DEFAULTS。display 深合并;refresh_ms clamp。"""
     file_cfg = _read_file()
-
-    if key == "kindle":
-        return _merge_kindle(file_cfg.get("kindle"))
 
     if key == "display":
         return _deep_merge_display(file_cfg.get("display"))
@@ -273,11 +210,6 @@ def _validate(partial):
         if disp:
             out["display"] = disp
 
-    if "kindle" in partial:
-        kclean = _clean_kindle(partial["kindle"])
-        if kclean:
-            out["kindle"] = kclean
-
     return out
 
 
@@ -315,18 +247,6 @@ def save(partial):
                     grp.update(sub)
                     base[group] = grp
                 merged["display"] = base
-            elif k == "kindle":
-                base = merged.get("kindle")
-                base = copy.deepcopy(base) if isinstance(base, dict) else {}
-                for kk, vv in v.items():
-                    if kk == "sizes":
-                        sz = base.get("sizes")
-                        sz = copy.deepcopy(sz) if isinstance(sz, dict) else {}
-                        sz.update(vv)
-                        base["sizes"] = sz
-                    else:
-                        base[kk] = vv
-                merged["kindle"] = base
             else:
                 merged[k] = v
         _atomic_write(merged)

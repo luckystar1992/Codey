@@ -9,8 +9,9 @@ from urllib.parse import urlparse, parse_qs
 from . import asr_history
 from . import collect
 from . import config
-from . import kindle_page
 from . import ngrok_api
+from . import usb_frames as uf
+from . import usb_link
 from .asr import WhisperManager
 from .chime import ChimeState
 from .state import build_state
@@ -21,6 +22,7 @@ STATE_PORT = int(os.environ.get("CODEY_PORT") or 8787)
 ASR_PORT = int(os.environ.get("CODEY_ASR_PORT") or 8788)
 MAX_ASR_BYTES = 8_000_000
 MAX_CONFIG_BYTES = 64 * 1024      # /codey/config POST 体积上限(64KB)
+MAX_DEVICE_WIFI_BYTES = 2 * 1024  # /device/wifi POST 体积上限(2KB,只装 ssid/pass)
 HISTORY_MAX = 500
 
 # UI 读取的配置 schema(纯数据;每项 type/options/label/min/max/restart)。
@@ -91,6 +93,46 @@ def config_post(body, content_length):
              if not (k in config.SECRET_KEYS and v == "")}
     config.save(clean)
     return 200, {"ok": True, "values": mask_config(config.all())}
+
+
+def device_config_payload():
+    """GET /device/config 的响应体:转发 CFG_GET 给设备(路径 B,USB 直连配置),返回 (status_code, dict)。
+    USB 链路不在线 / 设备无响应 -> 503(不是设备端错误,是链路层不可用)。"""
+    resp = usb_link.send_config_request(uf.CFG_GET, b"")
+    if resp is None:
+        return 503, {"ok": False, "error": "USB 链路未连接或设备无响应"}
+    _, payload = resp
+    try:
+        return 200, json.loads(payload.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return 502, {"ok": False, "error": "设备响应格式错误"}
+
+
+def device_wifi_post(body, content_length):
+    """POST /device/wifi 处理:{ssid,pass} -> 转发 CFG_SET 给设备,等待设备尝试连接后的结果。
+    设备侧 WiFi.begin 最长阻塞 8s,这里给串口往返多留 2s 余量。"""
+    if content_length is not None and content_length > MAX_DEVICE_WIFI_BYTES:
+        return 400, {"ok": False, "error": "body too large"}
+    try:
+        parsed = json.loads(body.decode("utf-8") or "{}")
+    except (ValueError, UnicodeDecodeError):
+        return 400, {"ok": False, "error": "invalid JSON"}
+    if not isinstance(parsed, dict):
+        return 400, {"ok": False, "error": "body must be an object"}
+    ssid = str(parsed.get("ssid") or "").strip()
+    if not ssid:
+        return 400, {"ok": False, "error": "ssid required"}
+    device_payload = json.dumps({"wifi_ssid": ssid, "wifi_pass": str(parsed.get("pass") or "")}).encode("utf-8")
+    resp = usb_link.send_config_request(uf.CFG_SET, device_payload, timeout=10.0)
+    if resp is None:
+        return 503, {"ok": False, "error": "USB 链路未连接或设备无响应(可能仍在尝试连接新网络)"}
+    _, ack = resp
+    try:
+        return 200, json.loads(ack.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return 502, {"ok": False, "error": "设备响应格式错误"}
+
+
 WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")   # companion/web
 SIM_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                         "sim", "codey-sim.html")   # repo/sim/codey-sim.html
@@ -142,7 +184,7 @@ class App:
         threading.Thread(target=self._ngrok_loop, daemon=True).start()
 
     def start_collectors(self):
-        """只起会话采集后台线程(填 session_cache/tok_rate);/kindle 与 /codey/state 依赖它。返回该线程。"""
+        """只起会话采集后台线程(填 session_cache/tok_rate);/codey/state 依赖它。返回该线程。"""
         t = threading.Thread(target=self._refresh_loop, daemon=True)
         t.start()
         return t
@@ -225,9 +267,6 @@ def make_handler(app):
             elif path == "/sim":
                 body, ctype = read_static(SIM_PATH)
                 self._send(200, body, ctype) if body is not None else self._send(404, b"sim missing", "text/plain")
-            elif path in ("/kindle", "/kindle.html"):
-                page = kindle_page.render(app.state(), config.get("kindle"))
-                self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
             elif path.startswith("/codey/config"):
                 self._send(200, json.dumps(config_get_payload(), ensure_ascii=False).encode())
             elif path.startswith("/codey/state"):
@@ -235,6 +274,9 @@ def make_handler(app):
             elif path.startswith("/codey/history"):
                 self._send(200, json.dumps({"entries": asr_history.recent(parse_history_n(self.path))},
                                            ensure_ascii=False).encode())
+            elif path.startswith("/device/config"):
+                code, resp = device_config_payload()
+                self._send(code, json.dumps(resp, ensure_ascii=False).encode())
             else:
                 self._send(404, b"not found", "text/plain")
 
@@ -260,8 +302,17 @@ def make_handler(app):
                 except Exception as e:
                     err = str(e)
                 self._send(200 if not err else 500, json.dumps({"text": text, "error": err}).encode())
-            else:
-                self._send(404, b"not found", "text/plain")
+                return
+            if self.path.startswith("/device/wifi"):
+                length = safe_content_length(self.headers, MAX_DEVICE_WIFI_BYTES)
+                if length is None:
+                    code, resp = device_wifi_post(b"", MAX_DEVICE_WIFI_BYTES + 1)
+                else:
+                    body = self.rfile.read(length) if length else b""
+                    code, resp = device_wifi_post(body, length)
+                self._send(code, json.dumps(resp, ensure_ascii=False).encode())
+                return
+            self._send(404, b"not found", "text/plain")
 
         def log_message(self, *_):                                # 静音默认访问日志
             pass
