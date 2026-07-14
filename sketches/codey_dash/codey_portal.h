@@ -7,8 +7,34 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <ArduinoJson.h>
+#include <qrcode.h>          // ESP-IDF 自带的 espressif/qrcode 组件(m5stack:esp32 core 已捆绑,免装外部库)
 #include "codey_theme.h"
 #include "wifi_store.h"
+
+// 门户开机画面画 WIFI: 二维码,扫码直连热点。热点是开放网络(见 wifiConfigPortal 的 softAP(...)
+// 无密码),故 QR 里 T=nopass。esp_qrcode_generate 是同步回调 API(编码完就调 display_func),
+// 用两个文件作用域变量把目标画布参数带进回调——单次调用、非重入,不需要线程安全。
+static int g_qrPixelSize = 0, g_qrCenterY = 0;
+
+static void qrDisplayCb(esp_qrcode_handle_t qrcode) {
+  int n = esp_qrcode_get_size(qrcode);
+  int scale = max(1, g_qrPixelSize / n);
+  int actual = scale * n;
+  int x0 = CX - actual / 2, y0 = g_qrCenterY - actual / 2;
+
+  cv.fillRoundRect(x0 - 10, y0 - 10, actual + 20, actual + 20, 8, c565(COL_WHITE));
+  for (int y = 0; y < n; y++) for (int x = 0; x < n; x++)
+    if (esp_qrcode_get_module(qrcode, x, y)) cv.fillRect(x0 + x * scale, y0 + y * scale, scale, scale, c565(0x000000));
+}
+
+static void drawWifiQr(const char* ssid, int qrCenterY, int qrPixelSize) {
+  g_qrCenterY = qrCenterY; g_qrPixelSize = qrPixelSize;
+  String payload = String("WIFI:T:nopass;S:") + ssid + ";P:;;";
+  esp_qrcode_config_t cfg = ESP_QRCODE_CONFIG_DEFAULT();
+  cfg.display_func = qrDisplayCb;
+  cfg.max_qrcode_version = 4;                          // 定长 payload,4 够用且留余量
+  esp_qrcode_generate(&cfg, payload.c_str());
+}
 
 static void showSetupScreen(const char* l1, const char* l2, const char* l3) {
   cv.fillSprite(c565(0x000000));
@@ -34,19 +60,20 @@ static void showConnecting(const char* ssid) {            // 开机逐个尝试�
   cv.pushSprite(0, 0);
 }
 
-static void showPortalScreen(const char* ip) {            // 全部连不上 -> 提示用 web 配置新网络
+static void showPortalScreen(const char* ip) {            // 全部连不上 -> 提示扫码/浏览器配置新网络
   cv.fillSprite(c565(0x000000));
   cv.setTextDatum(middle_center);
-  cv.setFont(&fonts::efontCN_24); cv.setTextColor(c565(COL_CODEX));
-  cv.drawString("WiFi 配置", CX, CY - 58);
-  cv.setFont(&fonts::efontCN_16); cv.setTextColor(c565(0xC8C8C8));
-  cv.drawString("手机连接热点", CX, CY - 20);
+  cv.setFont(&fonts::efontCN_16); cv.setTextColor(c565(COL_CODEX));
+  cv.drawString("扫码连接配网热点", CX, CY - 158);
+
+  drawWifiQr("Codey-Setup", CY - 8, 150);                  // 圆屏安全区内:QR 居中,上下留字
+
   cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextColor(c565(COL_WHITE));
-  cv.drawString("Codey-Setup", CX, CY + 6);
+  cv.drawString("Codey-Setup", CX, CY + 96);
   cv.setFont(&fonts::efontCN_16); cv.setTextColor(c565(0xC8C8C8));
-  cv.drawString("浏览器打开", CX, CY + 40);
-  cv.setFont(&fonts::FreeSansBold12pt7b); cv.setTextColor(c565(COL_WHITE));
-  cv.drawString(ip, CX, CY + 66);
+  cv.drawString("或浏览器打开", CX, CY + 124);
+  cv.setFont(&fonts::FreeSansBold9pt7b); cv.setTextColor(c565(COL_WHITE));
+  cv.drawString(ip, CX, CY + 148);
   cv.pushSprite(0, 0);
 }
 

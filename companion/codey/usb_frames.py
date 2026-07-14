@@ -16,9 +16,13 @@ STATE_REQ = 0x10
 LISTEN = 0x20
 PCM = 0x21
 FOCUS = 0x30
+CFG_GET = 0x40      # companion->device:读配置(路径 B,USB 直连配置)
+CFG_SET = 0x41      # companion->device:写配置(wifi_ssid/wifi_pass)
 HELLO_ACK = 0x81
 STATE = 0x90
 STT = 0xA0
+CFG_STATE = 0x91    # device->companion:CFG_GET 的响应(配置快照)
+CFG_ACK = 0x92      # device->companion:CFG_SET 的响应(ok/message)
 
 
 def crc16(data: bytes) -> int:

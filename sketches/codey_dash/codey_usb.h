@@ -6,7 +6,9 @@
 
 static const uint8_t USB_M0 = 0xC0, USB_M1 = 0xDE;
 enum { U_HELLO = 0x01, U_STATE_REQ = 0x10, U_LISTEN = 0x20, U_PCM = 0x21, U_FOCUS = 0x30,
-       U_HELLO_ACK = 0x81, U_STATE = 0x90, U_STT = 0xA0 };
+       U_CFG_GET = 0x40, U_CFG_SET = 0x41,                     // companion->device:读/写配置(路径 B,USB 直连配置)
+       U_HELLO_ACK = 0x81, U_STATE = 0x90, U_STT = 0xA0,
+       U_CFG_STATE = 0x91, U_CFG_ACK = 0x92 };                 // device->companion:CFG_GET/CFG_SET 的响应
 
 static SemaphoreHandle_t g_usbTxMtx = nullptr;   // setup 里 create;序列化整帧写出
 

@@ -135,7 +135,7 @@ static bool     g_stale = false;
 static uint32_t g_lastFetch = 0;
 static int      g_fetchFails = 0;    // consecutive fetch failures -> re-resolve Mac (IP drift self-heal)
 
-#include "codey_mascot.h"   // anim(updateAnim/aBlink/aGlance)+ AA arc(drawArcRange/drawArc)+ Claude/Codex/drawMascot
+#include "codey_mascot.h"   // anim(updateAnim/aBlink/aGlanceSpring)+ AA arc(drawArcRange/drawArc)+ Claude/Codex/drawMascot
 
 #include "codey_widgets.h"   // header/dots/wifi/meter/tile-helpers/session-count/blitProviderArc + 状态/心情/格式
 

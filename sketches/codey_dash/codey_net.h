@@ -1,6 +1,7 @@
 // sketches/codey_dash/codey_net.h — Companion state fetch/parse + core0 netTask (HTTP/WS/语音上行).
 // 单 TU 习惯:netTask 的前向声明在 setup() 前;其调用的 readClock/resolveMac/wsConnect/maybeRepointWs/
-// wsListen 在本头 #include 之前已定义;读写 .ino 的网络/会话全局。
+// wsListen 在本头 #include 之前已定义;读写 .ino 的网络/会话全局。usbCfgGet/usbCfgSet(路径 B配置)
+// 还依赖 wifi_store.h 的 g_nets/g_netCount/wifiStoreTouch,同样已在本头 #include 前就位。
 #pragma once
 #include <M5Unified.h>
 #include <WiFi.h>
@@ -143,6 +144,56 @@ static void fetchState() {
   }
 }
 
+// ---- 路径 B:USB 直连配置(companion 转发浏览器请求)。CFG_GET 无 payload → 回快照;
+// CFG_SET payload {"wifi_ssid":..,"wifi_pass":..} → 尝试连接后回结果。密码只写入不回传(见开发文档 §5.2)。
+static void usbCfgGet() {
+  JsonDocument doc;
+  doc["ssid"]   = g_ssid;
+  doc["wifi"]   = g_wifi;
+  doc["ip"]     = g_wifi ? WiFi.localIP().toString() : String("");
+  doc["bright"] = g_bright;
+  JsonArray hist = doc["history"].to<JsonArray>();
+  for (int i = 0; i < g_netCount; i++) {
+    JsonObject o = hist.add<JsonObject>();
+    o["ssid"] = g_nets[i].ssid; o["count"] = g_nets[i].count;   // 历史网络只报 SSID,密码不下发
+  }
+  String out; serializeJson(doc, out);
+  usbSendFrame(U_CFG_STATE, (const uint8_t*)out.c_str(), (uint16_t)out.length());
+}
+
+static void usbCfgSet(const uint8_t* payload, uint16_t len) {
+  JsonDocument doc;
+  bool ok = false; String message;
+  if (deserializeJson(doc, payload, len)) {
+    message = "bad json";
+  } else {
+    const char* ssid = doc["wifi_ssid"] | "";
+    const char* pass = doc["wifi_pass"] | "";
+    if (!ssid[0]) {
+      message = "empty ssid";
+    } else {
+      // 本函数已跑在 netTask(core0)里(usbOnFrame 由 usbRxPump 同步调用),这里阻塞 WiFi.begin up to 8s
+      // 会顺带卡住这轮 PCM/WS 转发——罕见的主动配置动作,可接受(v1),不用额外线程/状态机。
+      WiFi.mode(WIFI_STA);
+      WiFi.begin(ssid, pass);
+      uint32_t t0 = millis();
+      while (millis() - t0 < 8000) { if (WiFi.status() == WL_CONNECTED) { ok = true; break; } delay(150); }
+      if (ok) {
+        wifiStoreTouch(g_prefs, ssid, pass);
+        g_wifi = true;
+        strncpy(g_ssid, ssid, sizeof(g_ssid) - 1); g_ssid[sizeof(g_ssid) - 1] = 0;
+        g_netReconnect = true;             // 让 netTask 这轮起用新网络重连 WS/HTTP(resolveMac+wsConnect)
+        message = "connected";
+      } else {
+        message = "connect failed";
+      }
+    }
+  }
+  JsonDocument ack; ack["ok"] = ok; ack["ssid"] = g_ssid; ack["message"] = message;
+  String out; serializeJson(ack, out);
+  usbSendFrame(U_CFG_ACK, (const uint8_t*)out.c_str(), (uint16_t)out.length());
+}
+
 // USB 入站帧落地:更新在线时戳;HELLO_ACK→标在线;STATE→复用 applyStateDoc;STT→复用 voiceApplyStt。
 static void usbOnFrame(uint8_t type, const uint8_t* payload, uint16_t len) {
   g_usbLastRx = millis();
@@ -156,6 +207,10 @@ static void usbOnFrame(uint8_t type, const uint8_t* payload, uint16_t len) {
     JsonDocument doc;
     if (deserializeJson(doc, payload, len)) return;
     voiceApplyStt(doc["text"] | "", doc["final"] | false, doc["seq"] | 0, doc["seq"].is<int>());
+  } else if (type == U_CFG_GET) {
+    usbCfgGet();
+  } else if (type == U_CFG_SET) {
+    usbCfgSet(payload, len);
   }
 }
 

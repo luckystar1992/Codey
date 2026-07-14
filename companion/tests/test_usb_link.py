@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 from codey import usb_frames as uf
-from codey.usb_link import UsbChannel, handle_frame
+from codey.usb_link import ConfigBridge, UsbChannel, handle_frame
 
 
 class FakeSerialWriter:
@@ -74,6 +74,40 @@ async def test_state_req_frame_triggers_on_hello():
     await handle_frame(uf.STATE_REQ, b"", UsbChannel(FakeSerialWriter()),
                        FakeSession(), on_hello=lambda: called.__setitem__("n", called["n"] + 1))
     assert called["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_cfg_state_frame_delivers_to_bridge():
+    bridge = ConfigBridge()
+    await handle_frame(uf.CFG_STATE, b'{"ssid":"home"}', UsbChannel(FakeSerialWriter()),
+                       FakeSession(), bridge=bridge)
+    assert bridge._q.get_nowait() == (uf.CFG_STATE, b'{"ssid":"home"}')
+
+
+@pytest.mark.asyncio
+async def test_cfg_frame_without_bridge_is_noop():
+    # bridge=None(默认)时不该抛异常——设备可能在没有挂起请求的情况下自己重发/超时后到达的响应
+    await handle_frame(uf.CFG_ACK, b'{"ok":true}', UsbChannel(FakeSerialWriter()), FakeSession())
+
+
+def test_config_bridge_request_writes_frame_and_returns_delivered_response():
+    # request() 先清空队列再发帧,所以响应必须在 request() 已经在等待之后才 deliver——
+    # 模拟真实场景:USB 读线程收到设备回包,是在 HTTP 线程发完请求、阻塞等待期间才发生的。
+    import threading
+    w = FakeSerialWriter()
+    bridge = ConfigBridge()
+    threading.Timer(0.05, bridge.deliver, args=(uf.CFG_STATE, b'{"ssid":"home"}')).start()
+    result = bridge.request(w, threading.Lock(), uf.CFG_GET, b"", timeout=1.0)
+    assert result == (uf.CFG_STATE, b'{"ssid":"home"}')
+    frames, _ = uf.FrameDecoder().feed(bytes(w.written))
+    assert frames and frames[0] == (uf.CFG_GET, b"")
+
+
+def test_config_bridge_request_times_out_when_nothing_delivered():
+    import threading
+    bridge = ConfigBridge()
+    result = bridge.request(FakeSerialWriter(), threading.Lock(), uf.CFG_GET, b"", timeout=0.05)
+    assert result is None
 
 
 def test_emit_dev_logs_filters_binary_and_buffers_partial(capsys):

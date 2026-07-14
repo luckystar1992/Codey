@@ -1,8 +1,11 @@
 """USB-CDC 有线兜底链路:pyserial 后台线程,与 HTTP/WS 并存。
-握手(HELLO→ACK)→ 定时推 STATE → PCM/控制喂共享 VoiceSession。非帧字节当设备日志打印。"""
+握手(HELLO→ACK)→ 定时推 STATE → PCM/控制喂共享 VoiceSession。非帧字节当设备日志打印。
+另外承载「路径 B:USB 直连配置」——server.py 的 HTTP handler 线程通过 send_config_request()
+往设备发 CFG_GET/CFG_SET,阻塞等设备回 CFG_STATE/CFG_ACK(见开发文档「显示驱动与配网技术选型」§5.2)。"""
 import asyncio
 import glob
 import json
+import queue
 import threading
 import time
 
@@ -10,6 +13,43 @@ from codey import usb_frames as uf
 
 BAUD = 115200          # HWCDC 忽略波特率,占位
 STATE_PUSH_SEC = 1.0   # state 推送周期
+CFG_TIMEOUT_SEC = 8.0  # 覆盖固件端 WiFi.begin 尝试上限(8s)+ 帧往返余量,server.py 侧再加点余量
+
+
+class ConfigBridge:
+    """HTTP 线程 ↔ USB 读线程 的一发一收桥。_lock 把并发请求串行化,避免响应张冠李戴。"""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._q = queue.Queue(maxsize=1)
+
+    def request(self, ser, io_lock, ftype, payload, timeout):
+        with self._lock:
+            while not self._q.empty():
+                self._q.get_nowait()          # 清掉可能残留的陈旧响应
+            with io_lock:
+                ser.write(uf.encode(ftype, payload))
+            try:
+                return self._q.get(timeout=timeout)
+            except queue.Empty:
+                return None
+
+    def deliver(self, ftype, payload):
+        try:
+            self._q.put_nowait((ftype, payload))
+        except queue.Full:
+            pass
+
+
+# 当前在线的 USB 链路(串口/写锁/配置桥);_session_loop 建链时填、断链时清空。
+_link = {"ser": None, "lock": None, "bridge": None}
+
+
+def send_config_request(ftype, payload, timeout=CFG_TIMEOUT_SEC):
+    """线程安全:server.py 的 HTTP handler 调用。USB 链路不在线/无响应 → 返回 None(调用方回 503)。"""
+    ser, lock, bridge = _link["ser"], _link["lock"], _link["bridge"]
+    if not ser or not bridge:
+        return None
+    return bridge.request(ser, lock, ftype, payload, timeout)
 
 
 class UsbChannel:
@@ -38,8 +78,9 @@ class UsbChannel:
         pass        # USB 端设备不消费 focus_ack;留空(接口对称)
 
 
-async def handle_frame(ftype, payload, channel, session, on_hello=None):
-    """单帧路由(可单测):HELLO→ACK+标在线;PCM→on_pcm;LISTEN/FOCUS→on_control。"""
+async def handle_frame(ftype, payload, channel, session, on_hello=None, bridge=None):
+    """单帧路由(可单测):HELLO→ACK+标在线;PCM→on_pcm;LISTEN/FOCUS→on_control;
+    CFG_STATE/CFG_ACK→交给 ConfigBridge,唤醒等待中的 HTTP 请求(路径 B)。"""
     if ftype == uf.HELLO:
         await channel.send_hello()          # 完整握手描述(含 audio_params),经锁写出
         if on_hello:
@@ -59,6 +100,9 @@ async def handle_frame(ftype, payload, channel, session, on_hello=None):
         await session.on_control(d)
     elif ftype == uf.FOCUS:
         await session.on_control({"type": "focus", "session": payload.decode("utf-8", "ignore")})
+    elif ftype in (uf.CFG_STATE, uf.CFG_ACK):
+        if bridge:
+            bridge.deliver(ftype, payload)
 
 
 def _emit_dev_logs(log_buf, new_bytes):
@@ -117,6 +161,9 @@ def _session_loop(ser, app, make_backend, loop):
     dec = uf.FrameDecoder()
     log_buf = bytearray()
 
+    bridge = ConfigBridge()
+    _link["ser"], _link["lock"], _link["bridge"] = ser, lock, bridge   # 路径 B:本链路上线,可转发配置请求
+
     def mark_online():
         online["v"] = True
         _push_state(ser, app, lock)
@@ -134,7 +181,7 @@ def _session_loop(ser, app, make_backend, loop):
                     # 避免 PCM 与 listen:stop 并发复用同一 sherpa backend。代价:ASR 慢时读暂停,
                     # 极端下串口 RX 溢出 → CRC/半帧 → 解码器重同步(降级不损坏)。v1 可接受。
                     fut = asyncio.run_coroutine_threadsafe(
-                        handle_frame(ftype, payload, channel, session, on_hello=mark_online), loop)
+                        handle_frame(ftype, payload, channel, session, on_hello=mark_online, bridge=bridge), loop)
                     fut.result(timeout=15)        # 单帧处理卡死(ASR/executor 挂)→ 超时抛错 → 关口重连,不永久卡死读线程
             now = time.time()
             if online["v"] and now - online["last_push"] >= STATE_PUSH_SEC:
@@ -146,6 +193,9 @@ def _session_loop(ser, app, make_backend, loop):
             ser.close()
         except Exception:
             pass
+    finally:
+        if _link["ser"] is ser:                      # 本链路下线;若已被新链路替换则不误清
+            _link["ser"], _link["lock"], _link["bridge"] = None, None, None
 
 
 def _push_state(ser, app, lock):

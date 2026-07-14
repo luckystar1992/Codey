@@ -3,18 +3,22 @@
 #pragma once
 #include <M5Unified.h>
 #include "codey_theme.h"
+#include "codey_spring.h"
 
 // ---------- animation state (shared) ----------
 static bool     aBlink = false;
 static uint32_t aBlinkNext = 0, aBlinkEnd = 0;
-static float    aGlance = 0, aGlanceTarget = 0;
+static Spring1D aGlanceSpring;      // 视线偏移:临界阻尼弹簧,替代写死的 *0.15f 逐帧衰减
 static uint32_t aGlanceNext = 0;
+static uint32_t aAnimLastMs = 0;    // updateAnim 相邻两次调用的时间戳,算 dt 喂给弹簧
 
 static void updateAnim(uint32_t now) {
   if (!aBlink && now >= aBlinkNext) { aBlink = true; aBlinkEnd = now + 120; }
   if (aBlink && now >= aBlinkEnd)   { aBlink = false; aBlinkNext = now + 1500 + random(2800); }
-  if (now >= aGlanceNext) { aGlanceTarget = (random(201) - 100) / 100.0f; aGlanceNext = now + 1000 + random(1800); }
-  aGlance += (aGlanceTarget - aGlance) * 0.15f;
+  if (now >= aGlanceNext) { aGlanceSpring.to((random(201) - 100) / 100.0f); aGlanceNext = now + 1000 + random(1800); }
+  uint32_t dt = aAnimLastMs ? (now - aAnimLastMs) : 0; aAnimLastMs = now;
+  aGlanceSpring.halfLifeMs = 90.0f;   // 手感参数:多久追上目标的一半,帧率无关
+  aGlanceSpring.update((float)dt);
 }
 
 // ---------- the edge usage arc — a clean ring drawn with overlapping circles ----------
@@ -114,7 +118,7 @@ static void drawClaude(int ccx, int ccy, uint32_t color, const char* mood, float
   cv.fillSmoothCircle(PX(2.6f), PY(2.0f), cell * 0.34f, c565(0xF6F6F6));                  // specular dot
 
   float open = aBlink ? 0.08f : eyeOpenFor(mood);
-  float ew = 1.4f, eh = 2.0f * open, ey = 4.7f + (2.0f - eh) / 2.0f, ex = aGlance * 0.9f;
+  float ew = 1.4f, eh = 2.0f * open, ey = 4.7f + (2.0f - eh) / 2.0f, ex = aGlanceSpring.value * 0.9f;
   float exC[2] = { 3.5f, 8.5f };
   for (int k = 0; k < 2; k++) {
     cv.fillRect(PX(exC[k] - ew / 2 + ex), PY(ey), ew * cell + 1, eh * cell + 1, c565(0x0c0c0e));
@@ -180,7 +184,7 @@ static void drawCodex(int ccx, int ccy, uint32_t color, const char* mood, float 
   cv.clearClipRect();
 
   // eyes — mint, blink by flattening vertically; subtle glance + glint
-  const int gx = (int)lroundf(aGlance * 4);
+  const int gx = (int)lroundf(aGlanceSpring.value * 4);
   const int eyR = W(22), ry = aBlink ? max(2, W(3)) : eyR, eyeY = Y(175);
   const int ex[2] = { X(190) + gx, X(330) + gx };
   for (int s = 0; s < 2; s++) {
